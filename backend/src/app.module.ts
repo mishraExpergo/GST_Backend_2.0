@@ -5,6 +5,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { toNumber } from './config/database.config';
+import { GstModule } from './modules/gst/gst.module.js';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { toNumber } from './config/database.config';
         synchronize: configService.get<string>('POSTGRES_SYNC', 'false') === 'true',
       }),
     }),
+    GstModule,
   ],
   controllers: [AppController],
   providers: [AppService],
