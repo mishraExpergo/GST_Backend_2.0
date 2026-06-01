@@ -24,25 +24,35 @@ export class GstService {
     @InjectDataSource() private readonly dataSource: DataSource,
   ) {}
 
-  async processExcel(buffer: Buffer, rawTableName: string) {
+  async processUpload(
+    buffer: Buffer,
+    originalName: string | undefined,
+    mimetype: string | undefined,
+    rawTableName: string,
+  ) {
     const tableName = this.sanitizeIdentifier(rawTableName);
+    const isCsv = this.isCsvFile(originalName, mimetype);
 
-    // 1. Parse the Excel file
-    const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: true });
+    // 1. Parse the Excel / CSV file
+    const workbook = isCsv
+      ? XLSX.read(buffer.toString('utf8'), { type: 'string', cellDates: true })
+      : XLSX.read(buffer, { type: 'buffer', cellDates: true });
     const sheetName = workbook.SheetNames[0];
     if (!sheetName) {
-      throw new BadRequestException('Excel file contains no sheets.');
+      throw new BadRequestException('Uploaded file contains no sheets.');
     }
     const sheet = workbook.Sheets[sheetName];
 
+    // For CSV, every cell is a string by default; use raw:false so xlsx
+    // coerces numbers/dates. For Excel, raw:true preserves native cell types.
     const rows: Record<string, unknown>[] = XLSX.utils.sheet_to_json(sheet, {
       defval: null,
-      raw: true,
+      raw: !isCsv,
     });
 
     if (rows.length === 0) {
       throw new BadRequestException(
-        'Excel sheet is empty. Need at least one data row.',
+        'Uploaded sheet is empty. Need at least one data row.',
       );
     }
 
@@ -73,19 +83,62 @@ export class GstService {
       seen.add(col.name);
     }
 
-    // 4. Create table + insert rows in a single transaction
+    // 4. Create table if missing, then insert (always append) inside a transaction
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
 
+    let tableCreated = false;
+    const addedColumns: ColumnDef[] = [];
+    const widenedColumns: Array<{
+      name: string;
+      from: PgType;
+      to: PgType;
+    }> = [];
+    // Final type each column should be coerced into for the INSERT.
+    const insertColumns: ColumnDef[] = columns.map((c) => ({ ...c }));
+
     try {
-      await queryRunner.query(`DROP TABLE IF EXISTS "${tableName}"`);
+      const tableExists = await this.tableExists(queryRunner, tableName);
 
-      const createSql = this.buildCreateTableSql(tableName, columns);
-      this.logger.log(`Creating table: ${createSql}`);
-      await queryRunner.query(createSql);
+      if (!tableExists) {
+        const createSql = this.buildCreateTableSql(tableName, columns);
+        this.logger.log(`Creating table: ${createSql}`);
+        await queryRunner.query(createSql);
+        tableCreated = true;
+      } else {
+        const existingCols = await this.getExistingColumnTypes(
+          queryRunner,
+          tableName,
+        );
 
-      const colList = columns.map((c) => `"${c.name}"`).join(', ');
+        for (const col of insertColumns) {
+          const existingType = existingCols.get(col.name);
+
+          if (existingType === undefined) {
+            const alterSql = `ALTER TABLE "${tableName}" ADD COLUMN "${col.name}" ${col.type} NULL`;
+            this.logger.log(`Adding column: ${alterSql}`);
+            await queryRunner.query(alterSql);
+            addedColumns.push({ ...col });
+            continue;
+          }
+
+          const mergedType = this.mergeType(existingType, col.type);
+          if (mergedType !== existingType) {
+            const alterSql = `ALTER TABLE "${tableName}" ALTER COLUMN "${col.name}" TYPE ${mergedType} USING "${col.name}"::${this.pgCastTarget(mergedType)}`;
+            this.logger.log(`Widening column: ${alterSql}`);
+            await queryRunner.query(alterSql);
+            widenedColumns.push({
+              name: col.name,
+              from: existingType,
+              to: mergedType,
+            });
+          }
+          col.type = mergedType;
+        }
+      }
+
+      const colList = insertColumns.map((c) => `"${c.name}"`).join(', ');
       const batchSize = 500;
       let inserted = 0;
 
@@ -96,7 +149,7 @@ export class GstService {
 
         for (const row of batch) {
           const rowPlaceholders: string[] = [];
-          for (const col of columns) {
+          for (const col of insertColumns) {
             rowPlaceholders.push(`$${params.length + 1}`);
             params.push(this.coerceValue(row[col.raw], col.type));
           }
@@ -111,20 +164,119 @@ export class GstService {
       await queryRunner.commitTransaction();
 
       return {
-        message: 'Excel uploaded and table created successfully.',
+        message: tableCreated
+          ? 'Table created and rows inserted successfully.'
+          : addedColumns.length > 0 || widenedColumns.length > 0
+            ? 'Schema updated and rows appended successfully.'
+            : 'Rows appended to existing table successfully.',
         table: tableName,
         sheet: sheetName,
-        columns: columns.map(({ raw, name, type }) => ({ raw, name, type })),
+        tableCreated,
+        columnsInserted: insertColumns.map(({ raw, name, type }) => ({
+          raw,
+          name,
+          type,
+        })),
+        addedColumns: addedColumns.map(({ raw, name, type }) => ({
+          raw,
+          name,
+          type,
+        })),
+        widenedColumns,
         rowsInserted: inserted,
       };
     } catch (err) {
       await queryRunner.rollbackTransaction();
       this.logger.error('Failed to process Excel', err as Error);
+      if (err instanceof BadRequestException) throw err;
       throw new InternalServerErrorException(
         `Failed to process Excel: ${(err as Error).message}`,
       );
     } finally {
       await queryRunner.release();
+    }
+  }
+
+  private async tableExists(
+    queryRunner: import('typeorm').QueryRunner,
+    tableName: string,
+  ): Promise<boolean> {
+    const result: Array<{ exists: boolean }> = await queryRunner.query(
+      `SELECT EXISTS (
+         SELECT 1 FROM information_schema.tables
+         WHERE table_schema = current_schema() AND table_name = $1
+       ) AS "exists"`,
+      [tableName],
+    );
+    return Boolean(result?.[0]?.exists);
+  }
+
+  private async getExistingColumnTypes(
+    queryRunner: import('typeorm').QueryRunner,
+    tableName: string,
+  ): Promise<Map<string, PgType>> {
+    const rows: Array<{ column_name: string; data_type: string }> =
+      await queryRunner.query(
+        `SELECT column_name, data_type FROM information_schema.columns
+         WHERE table_schema = current_schema() AND table_name = $1`,
+        [tableName],
+      );
+    const map = new Map<string, PgType>();
+    for (const r of rows) {
+      map.set(r.column_name, this.mapPgDataType(r.data_type));
+    }
+    return map;
+  }
+
+  private mapPgDataType(dataType: string): PgType {
+    const t = dataType.toLowerCase();
+    if (
+      t === 'integer' ||
+      t === 'smallint' ||
+      t === 'bigint' ||
+      t === 'serial' ||
+      t === 'bigserial'
+    )
+      return 'INTEGER';
+    if (
+      t === 'numeric' ||
+      t === 'decimal' ||
+      t === 'real' ||
+      t === 'double precision'
+    )
+      return 'NUMERIC';
+    if (t.startsWith('timestamp') || t === 'date') return 'TIMESTAMP';
+    if (t === 'boolean') return 'BOOLEAN';
+    return 'TEXT';
+  }
+
+  /**
+   * Decide the narrowest Postgres type that can hold values of BOTH `a` and `b`.
+   * Only INTEGER -> NUMERIC widens within numerics; everything else falls back to TEXT.
+   */
+  private mergeType(a: PgType, b: PgType): PgType {
+    if (a === b) return a;
+    if (
+      (a === 'INTEGER' && b === 'NUMERIC') ||
+      (a === 'NUMERIC' && b === 'INTEGER')
+    )
+      return 'NUMERIC';
+    return 'TEXT';
+  }
+
+  private pgCastTarget(type: PgType): string {
+    switch (type) {
+      case 'INTEGER':
+        return 'integer';
+      case 'NUMERIC':
+        return 'numeric';
+      case 'TIMESTAMP':
+        return 'timestamp';
+      case 'BOOLEAN':
+        return 'boolean';
+      case 'TEXT':
+      default:
+        return 'text';
     }
   }
 
@@ -162,19 +314,33 @@ export class GstService {
       if (v === null || v === undefined || v === '') continue;
       hasValue = true;
 
-      // boolean check
-      if (typeof v !== 'boolean') allBool = false;
+      // boolean check (handle real booleans and "true"/"false" strings from CSV)
+      const boolStr =
+        typeof v === 'string' && ['true', 'false'].includes(v.toLowerCase());
+      if (typeof v !== 'boolean' && !boolStr) allBool = false;
 
-      // number check
+      // number check (native number or numeric-looking string from CSV)
+      let asNumber: number | null = null;
       if (typeof v === 'number' && Number.isFinite(v)) {
-        if (!Number.isInteger(v)) allInt = false;
-      } else {
+        asNumber = v;
+      } else if (typeof v === 'string' && v.trim() !== '') {
+        const n = Number(v);
+        if (Number.isFinite(n)) asNumber = n;
+      }
+      if (asNumber === null) {
         allInt = false;
         allNumber = false;
+      } else if (!Number.isInteger(asNumber)) {
+        allInt = false;
       }
 
-      // date check
-      if (!(v instanceof Date)) {
+      // date check (Date instance or parseable date string from CSV)
+      if (v instanceof Date) {
+        // ok
+      } else if (typeof v === 'string') {
+        const d = new Date(v);
+        if (Number.isNaN(d.getTime())) allDate = false;
+      } else {
         allDate = false;
       }
     }
@@ -185,6 +351,16 @@ export class GstService {
     if (allNumber) return 'NUMERIC';
     if (allDate) return 'TIMESTAMP';
     return 'TEXT';
+  }
+
+  private isCsvFile(
+    originalName: string | undefined,
+    mimetype: string | undefined,
+  ): boolean {
+    const ext = (originalName || '').toLowerCase().split('.').pop();
+    if (ext === 'csv') return true;
+    const csvMimes = ['text/csv', 'application/csv'];
+    return !!mimetype && csvMimes.includes(mimetype);
   }
 
   private coerceValue(value: unknown, type: PgType): unknown {
@@ -201,8 +377,13 @@ export class GstService {
         const d = new Date(String(value));
         return Number.isNaN(d.getTime()) ? null : d.toISOString();
       }
-      case 'BOOLEAN':
+      case 'BOOLEAN': {
+        if (typeof value === 'boolean') return value;
+        const s = String(value).trim().toLowerCase();
+        if (['true', '1', 'yes', 'y'].includes(s)) return true;
+        if (['false', '0', 'no', 'n'].includes(s)) return false;
         return Boolean(value);
+      }
       case 'TEXT':
       default:
         return String(value);

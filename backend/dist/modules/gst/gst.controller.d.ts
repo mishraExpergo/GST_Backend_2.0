@@ -6,10 +6,21 @@ export declare class GstController {
         message: string;
         table: string;
         sheet: string;
-        columns: {
+        tableCreated: boolean;
+        columnsInserted: {
             raw: string;
             name: string;
             type: "INTEGER" | "NUMERIC" | "TIMESTAMP" | "BOOLEAN" | "TEXT";
+        }[];
+        addedColumns: {
+            raw: string;
+            name: string;
+            type: "INTEGER" | "NUMERIC" | "TIMESTAMP" | "BOOLEAN" | "TEXT";
+        }[];
+        widenedColumns: {
+            name: string;
+            from: "INTEGER" | "NUMERIC" | "TIMESTAMP" | "BOOLEAN" | "TEXT";
+            to: "INTEGER" | "NUMERIC" | "TIMESTAMP" | "BOOLEAN" | "TEXT";
         }[];
         rowsInserted: number;
     }>;

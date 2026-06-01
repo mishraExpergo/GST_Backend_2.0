@@ -16,7 +16,7 @@ export class GstController {
   /**
    * POST /gst/upload
    * multipart/form-data:
-   *   - file:      .xlsx / .xls file (required)
+   *   - file:      .xlsx / .xls / .csv file (required)
    *   - tableName: target table name to create in Postgres (required)
    */
   @Post('upload')
@@ -40,17 +40,31 @@ export class GstController {
       );
     }
 
-    const allowed = [
+    const allowedMime = [
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'application/vnd.ms-excel',
       'application/octet-stream',
+      'text/csv',
+      'application/csv',
+      'text/plain',
     ];
-    if (file.mimetype && !allowed.includes(file.mimetype)) {
+    const allowedExt = ['.xlsx', '.xls', '.csv'];
+    const ext = (file.originalname || '')
+      .toLowerCase()
+      .slice(((file.originalname || '').lastIndexOf('.') >>> 0));
+    const mimeOk = !file.mimetype || allowedMime.includes(file.mimetype);
+    const extOk = allowedExt.includes(ext);
+    if (!mimeOk && !extOk) {
       throw new BadRequestException(
-        `Unsupported file type: ${file.mimetype}. Upload an .xlsx or .xls file.`,
+        `Unsupported file type: ${file.mimetype || ext}. Upload an .xlsx, .xls or .csv file.`,
       );
     }
 
-    return this.gstService.processExcel(file.buffer, tableName);
+    return this.gstService.processUpload(
+      file.buffer,
+      file.originalname,
+      file.mimetype,
+      tableName,
+    );
   }
 }
