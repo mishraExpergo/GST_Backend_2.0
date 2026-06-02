@@ -15,7 +15,7 @@ const typeorm_1 = require("@nestjs/typeorm");
 const app_controller_1 = require("./app.controller");
 const app_service_1 = require("./app.service");
 const database_config_1 = require("./config/database.config");
-const gst_module_js_1 = require("./modules/gst/gst.module.js");
+const gst_module_1 = require("./modules/gst/gst.module");
 const enableMongo = process.env.ENABLE_MONGO === 'true';
 let AppModule = class AppModule {
 };
@@ -52,7 +52,7 @@ exports.AppModule = AppModule = __decorate([
                     synchronize: configService.get('POSTGRES_SYNC', 'false') === 'true',
                 }),
             }),
-            gst_module_js_1.GstModule,
+            gst_module_1.GstModule,
         ],
         controllers: [app_controller_1.AppController],
         providers: [app_service_1.AppService],

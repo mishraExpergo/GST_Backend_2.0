@@ -6,7 +6,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { toNumber } from './config/database.config';
-import { GstModule } from './modules/gst/gst.module.js';
+import { GstModule } from './modules/gst/gst.module';
 
 const enableMongo = process.env.ENABLE_MONGO === 'true';
 
