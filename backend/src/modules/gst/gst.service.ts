@@ -2,17 +2,16 @@ import {
   BadRequestException,
   Inject,
   Injectable,
-  InternalServerErrorException,
   Logger,
   Optional,
 } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, QueryRunner, Repository } from 'typeorm';
 import { ClientProxy } from '@nestjs/microservices';
 import * as XLSX from 'xlsx';
 import * as fs from 'fs';
 import { Job, JobStatus, JobType } from '../../entities/job.entity';
-import { JobTask, TaskStatus } from '../../entities/job-task.entity';
+import { JobTask } from '../../entities/job-task.entity';
 import { FileStorageService } from '../shared/services/file-storage.service';
 
 type PgType = 'INTEGER' | 'NUMERIC' | 'TIMESTAMP' | 'BOOLEAN' | 'TEXT';
@@ -55,7 +54,11 @@ export class GstService {
     });
   }
 
-  async updateJobStatus(jobId: string, status: JobStatus, errorMessage?: string): Promise<void> {
+  async updateJobStatus(
+    jobId: string,
+    status: JobStatus,
+    errorMessage?: string,
+  ): Promise<void> {
     await this.jobRepo.update(jobId, { status, errorMessage });
     this.logger.log(`Job ${jobId} status updated to ${status}`);
   }
@@ -63,7 +66,7 @@ export class GstService {
   // ------------------ Asynchronous Workers ------------------
 
   /**
-   * Worker method to process raw Excel import from disk
+   * Worker method to process Excel/CSV import from disk (append or migrate schema).
    */
   async processExcel(filePath: string, rawTableName: string, jobId: string) {
     await this.jobRepo.update(jobId, { status: 'PROCESSING' });
@@ -71,115 +74,99 @@ export class GstService {
 
     try {
       if (!fs.existsSync(filePath)) {
-        throw new Error(`Cached excel file not found at path: ${filePath}`);
+        throw new Error(`Cached file not found at path: ${filePath}`);
       }
 
-      // 1. Parse Excel from disk path
-      const workbook = XLSX.readFile(filePath, { cellDates: true });
+      const job = await this.jobRepo.findOne({ where: { id: jobId } });
+      const meta = (job?.metadata ?? {}) as {
+        originalName?: string;
+        mimetype?: string;
+      };
+      const originalName = meta.originalName ?? filePath;
+      const mimetype = meta.mimetype;
+      const isCsv = this.isCsvFile(originalName, mimetype);
+
+      const buffer = fs.readFileSync(filePath);
+      const workbook = isCsv
+        ? XLSX.read(buffer.toString('utf8'), { type: 'string', cellDates: true })
+        : XLSX.read(buffer, { type: 'buffer', cellDates: true });
       const sheetName = workbook.SheetNames[0];
       if (!sheetName) {
-        throw new BadRequestException('Excel file contains no sheets.');
+        throw new BadRequestException('Uploaded file contains no sheets.');
       }
       const sheet = workbook.Sheets[sheetName];
 
       const rows: Record<string, unknown>[] = XLSX.utils.sheet_to_json(sheet, {
         defval: null,
-        raw: true,
+        raw: !isCsv,
       });
 
       if (rows.length === 0) {
-        throw new BadRequestException('Excel sheet is empty.');
+        throw new BadRequestException(
+          'Uploaded sheet is empty. Need at least one data row.',
+        );
       }
 
-      // 2. Collect Headers
       const headerSet = new Set<string>();
       for (const row of rows) {
         Object.keys(row).forEach((k) => headerSet.add(k));
       }
       const rawHeaders = Array.from(headerSet);
+      if (rawHeaders.length === 0) {
+        throw new BadRequestException('No columns detected in the uploaded file.');
+      }
 
-      // 3. Build column defs
       const columns: ColumnDef[] = rawHeaders.map((header) => ({
         raw: header,
         name: this.sanitizeIdentifier(header),
         type: this.inferColumnType(rows, header),
       }));
 
-      // Validate duplicate headers
       const seen = new Set<string>();
       for (const col of columns) {
         if (seen.has(col.name)) {
-          throw new BadRequestException(`Duplicate column name "${col.name}" after sanitization.`);
+          throw new BadRequestException(
+            `Duplicate column name "${col.name}" after sanitization. Rename headers in the file.`,
+          );
         }
         seen.add(col.name);
       }
 
-      // 4. Update job segments count (Excel is processed as a single chunk)
       await this.jobRepo.update(jobId, { totalChunks: 1 });
 
-      // 5. Create Table + Insert rows
-      const queryRunner = this.dataSource.createQueryRunner();
-      await queryRunner.connect();
-      await queryRunner.startTransaction();
+      const rowsInserted = await this.appendRowsToTable(tableName, rows, columns);
 
-      try {
-        await queryRunner.query(`DROP TABLE IF EXISTS "${tableName}"`);
-        const createSql = this.buildCreateTableSql(tableName, columns);
-        await queryRunner.query(createSql);
-
-        const colList = columns.map((c) => `"${c.name}"`).join(', ');
-        const batchSize = 500;
-
-        for (let i = 0; i < rows.length; i += batchSize) {
-          const batch = rows.slice(i, i + batchSize);
-          const params: unknown[] = [];
-          const valueRows: string[] = [];
-
-          for (const row of batch) {
-            const rowPlaceholders: string[] = [];
-            for (const col of columns) {
-              rowPlaceholders.push(`$${params.length + 1}`);
-              params.push(this.coerceValue(row[col.raw], col.type));
-            }
-            valueRows.push(`(${rowPlaceholders.join(', ')})`);
-          }
-
-          const insertSql = `INSERT INTO "${tableName}" (${colList}) VALUES ${valueRows.join(', ')}`;
-          await queryRunner.query(insertSql, params);
-        }
-
-        await queryRunner.commitTransaction();
-      } catch (err) {
-        await queryRunner.rollbackTransaction();
-        throw err;
-      } finally {
-        await queryRunner.release();
-      }
-
-      // Complete Job
+      const completedMetadata: Record<string, any> = {
+        ...meta,
+        rowsInserted,
+        sheet: sheetName,
+      };
       await this.jobRepo.update(jobId, {
         status: 'COMPLETED',
         completedChunks: 1,
+        metadata: completedMetadata,
       });
     } catch (err) {
       await this.updateJobStatus(jobId, 'FAILED', (err as Error).message);
       throw err;
     } finally {
-      // Always cleanup temporary file
       await this.fileStorageService.deleteFile(filePath);
     }
   }
 
   /**
    * API Ingestion Orchestrator
-   * Creates the table structure first, saves tasks to DB, then pushes N chunk events to RabbitMQ
    */
-  async processApiParent(jobId: string, endpoint: string, totalRecords: number, rawTableName: string) {
+  async processApiParent(
+    jobId: string,
+    endpoint: string,
+    totalRecords: number,
+    rawTableName: string,
+  ) {
     try {
       await this.jobRepo.update(jobId, { status: 'PROCESSING' });
       const tableName = this.sanitizeIdentifier(rawTableName);
 
-      // 1. Create table structure dynamically from mock/sampled structure
       const sample = this.getMockSampleRecord();
       const headers = Object.keys(sample);
       const columns: ColumnDef[] = headers.map((header) => ({
@@ -199,13 +186,11 @@ export class GstService {
         await queryRunner.release();
       }
 
-      // 2. Calculate pagination chunks
-      const limit = 1000; // 1,000 records per page chunk
+      const limit = 1000;
       const totalChunks = Math.ceil(totalRecords / limit);
 
       await this.jobRepo.update(jobId, { totalChunks });
 
-      // 3. Save tasks and dispatch events in chunks
       for (let page = 1; page <= totalChunks; page++) {
         const task = this.taskRepo.create({
           jobId,
@@ -244,7 +229,6 @@ export class GstService {
 
   /**
    * Concurrent Chunk Worker
-   * Fetches high-volume paginated records and batch inserts them under a safe transaction
    */
   async processApiChunk(
     taskId: string,
@@ -257,11 +241,8 @@ export class GstService {
     await this.taskRepo.update(taskId, { status: 'PROCESSING', attempts: 1 });
 
     try {
-      // 1. Simulate external heavy paginated API request
-      // (This fetches/generates 1,000 complex GST records concurrently)
       const records = this.fetchMockApiPage(page, limit);
 
-      // 2. Perform DB Batch Insertion
       const sample = this.getMockSampleRecord();
       const headers = Object.keys(sample);
       const columns: ColumnDef[] = headers.map((header) => ({
@@ -299,22 +280,188 @@ export class GstService {
         await queryRunner.release();
       }
 
-      // 3. Mark task completed
       await this.taskRepo.update(taskId, { status: 'COMPLETED' });
 
-      // 4. Atomically increment completed chunks and update parent job progress
       const job = await this.jobRepo.findOne({ where: { id: jobId } });
       if (job) {
         const newCompleted = job.completedChunks + 1;
-        const newStatus: JobStatus = newCompleted >= job.totalChunks ? 'COMPLETED' : 'PROCESSING';
+        const newStatus: JobStatus =
+          newCompleted >= job.totalChunks ? 'COMPLETED' : 'PROCESSING';
         await this.jobRepo.update(jobId, {
           completedChunks: newCompleted,
           status: newStatus,
         });
       }
     } catch (err) {
-      await this.taskRepo.update(taskId, { status: 'FAILED', errorMessage: (err as Error).message });
+      await this.taskRepo.update(taskId, {
+        status: 'FAILED',
+        errorMessage: (err as Error).message,
+      });
       throw err;
+    }
+  }
+
+  // ------------------ DB import (append / schema migrate) ------------------
+
+  private async appendRowsToTable(
+    tableName: string,
+    rows: Record<string, unknown>[],
+    columns: ColumnDef[],
+  ): Promise<number> {
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    const insertColumns: ColumnDef[] = columns.map((c) => ({ ...c }));
+
+    try {
+      await this.ensureTableSchema(queryRunner, tableName, insertColumns);
+
+      const colList = insertColumns.map((c) => `"${c.name}"`).join(', ');
+      const batchSize = 500;
+      let inserted = 0;
+
+      for (let i = 0; i < rows.length; i += batchSize) {
+        const batch = rows.slice(i, i + batchSize);
+        const params: unknown[] = [];
+        const valueRows: string[] = [];
+
+        for (const row of batch) {
+          const rowPlaceholders: string[] = [];
+          for (const col of insertColumns) {
+            rowPlaceholders.push(`$${params.length + 1}`);
+            params.push(this.coerceValue(row[col.raw], col.type));
+          }
+          valueRows.push(`(${rowPlaceholders.join(', ')})`);
+        }
+
+        const insertSql = `INSERT INTO "${tableName}" (${colList}) VALUES ${valueRows.join(', ')}`;
+        await queryRunner.query(insertSql, params);
+        inserted += batch.length;
+      }
+
+      await queryRunner.commitTransaction();
+      return inserted;
+    } catch (err) {
+      await queryRunner.rollbackTransaction();
+      throw err;
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  private async ensureTableSchema(
+    queryRunner: QueryRunner,
+    tableName: string,
+    insertColumns: ColumnDef[],
+  ): Promise<void> {
+    const tableExists = await this.tableExists(queryRunner, tableName);
+
+    if (!tableExists) {
+      const createSql = this.buildCreateTableSql(tableName, insertColumns);
+      this.logger.log(`Creating table: ${createSql}`);
+      await queryRunner.query(createSql);
+      return;
+    }
+
+    const existingCols = await this.getExistingColumnTypes(queryRunner, tableName);
+
+    for (const col of insertColumns) {
+      const existingType = existingCols.get(col.name);
+
+      if (existingType === undefined) {
+        const alterSql = `ALTER TABLE "${tableName}" ADD COLUMN "${col.name}" ${col.type} NULL`;
+        this.logger.log(`Adding column: ${alterSql}`);
+        await queryRunner.query(alterSql);
+        continue;
+      }
+
+      const mergedType = this.mergeType(existingType, col.type);
+      if (mergedType !== existingType) {
+        const alterSql = `ALTER TABLE "${tableName}" ALTER COLUMN "${col.name}" TYPE ${mergedType} USING "${col.name}"::${this.pgCastTarget(mergedType)}`;
+        this.logger.log(`Widening column: ${alterSql}`);
+        await queryRunner.query(alterSql);
+      }
+      col.type = mergedType;
+    }
+  }
+
+  private async tableExists(
+    queryRunner: QueryRunner,
+    tableName: string,
+  ): Promise<boolean> {
+    const result: Array<{ exists: boolean }> = await queryRunner.query(
+      `SELECT EXISTS (
+         SELECT 1 FROM information_schema.tables
+         WHERE table_schema = current_schema() AND table_name = $1
+       ) AS "exists"`,
+      [tableName],
+    );
+    return Boolean(result?.[0]?.exists);
+  }
+
+  private async getExistingColumnTypes(
+    queryRunner: QueryRunner,
+    tableName: string,
+  ): Promise<Map<string, PgType>> {
+    const rows: Array<{ column_name: string; data_type: string }> =
+      await queryRunner.query(
+        `SELECT column_name, data_type FROM information_schema.columns
+         WHERE table_schema = current_schema() AND table_name = $1`,
+        [tableName],
+      );
+    const map = new Map<string, PgType>();
+    for (const r of rows) {
+      map.set(r.column_name, this.mapPgDataType(r.data_type));
+    }
+    return map;
+  }
+
+  private mapPgDataType(dataType: string): PgType {
+    const t = dataType.toLowerCase();
+    if (
+      t === 'integer' ||
+      t === 'smallint' ||
+      t === 'bigint' ||
+      t === 'serial' ||
+      t === 'bigserial'
+    )
+      return 'INTEGER';
+    if (
+      t === 'numeric' ||
+      t === 'decimal' ||
+      t === 'real' ||
+      t === 'double precision'
+    )
+      return 'NUMERIC';
+    if (t.startsWith('timestamp') || t === 'date') return 'TIMESTAMP';
+    if (t === 'boolean') return 'BOOLEAN';
+    return 'TEXT';
+  }
+
+  private mergeType(a: PgType, b: PgType): PgType {
+    if (a === b) return a;
+    if (
+      (a === 'INTEGER' && b === 'NUMERIC') ||
+      (a === 'NUMERIC' && b === 'INTEGER')
+    )
+      return 'NUMERIC';
+    return 'TEXT';
+  }
+
+  private pgCastTarget(type: PgType): string {
+    switch (type) {
+      case 'INTEGER':
+        return 'integer';
+      case 'NUMERIC':
+        return 'numeric';
+      case 'TIMESTAMP':
+        return 'timestamp';
+      case 'BOOLEAN':
+        return 'boolean';
+      case 'TEXT':
+      default:
+        return 'text';
     }
   }
 
@@ -343,7 +490,7 @@ export class GstService {
         legal_name: `Taxpayer Enterprise Co ${offset + i}`,
         trade_name: `Filing Trade Group ${offset + i}`,
         filing_date: new Date(Date.now() - (i % 30) * 24 * 3600 * 1000),
-        taxable_value: parseFloat((100.50 * (i + 1) + 250).toFixed(2)),
+        taxable_value: parseFloat((100.5 * (i + 1) + 250).toFixed(2)),
         tax_amount: parseFloat((18.09 * (i + 1) + 45).toFixed(2)),
         is_active: i % 15 !== 0,
         total_invoices: 10 + i,
@@ -352,7 +499,7 @@ export class GstService {
     return records;
   }
 
-  // ----------------------- Data Coercion Helpers -----------------------
+  // ----------------------- helpers -----------------------
 
   private sanitizeIdentifier(name: string): string {
     const cleaned = String(name ?? '')
@@ -368,7 +515,10 @@ export class GstService {
     return safe.slice(0, 63);
   }
 
-  private inferColumnType(rows: Record<string, unknown>[], header: string): PgType {
+  private inferColumnType(
+    rows: Record<string, unknown>[],
+    header: string,
+  ): PgType {
     let allInt = true;
     let allNumber = true;
     let allDate = true;
@@ -380,16 +530,30 @@ export class GstService {
       if (v === null || v === undefined || v === '') continue;
       hasValue = true;
 
-      if (typeof v !== 'boolean') allBool = false;
+      const boolStr =
+        typeof v === 'string' && ['true', 'false'].includes(v.toLowerCase());
+      if (typeof v !== 'boolean' && !boolStr) allBool = false;
 
+      let asNumber: number | null = null;
       if (typeof v === 'number' && Number.isFinite(v)) {
-        if (!Number.isInteger(v)) allInt = false;
-      } else {
+        asNumber = v;
+      } else if (typeof v === 'string' && v.trim() !== '') {
+        const n = Number(v);
+        if (Number.isFinite(n)) asNumber = n;
+      }
+      if (asNumber === null) {
         allInt = false;
         allNumber = false;
+      } else if (!Number.isInteger(asNumber)) {
+        allInt = false;
       }
 
-      if (!(v instanceof Date)) {
+      if (v instanceof Date) {
+        // ok
+      } else if (typeof v === 'string') {
+        const d = new Date(v);
+        if (Number.isNaN(d.getTime())) allDate = false;
+      } else {
         allDate = false;
       }
     }
@@ -400,6 +564,16 @@ export class GstService {
     if (allNumber) return 'NUMERIC';
     if (allDate) return 'TIMESTAMP';
     return 'TEXT';
+  }
+
+  private isCsvFile(
+    originalName: string | undefined,
+    mimetype: string | undefined,
+  ): boolean {
+    const ext = (originalName || '').toLowerCase().split('.').pop();
+    if (ext === 'csv') return true;
+    const csvMimes = ['text/csv', 'application/csv'];
+    return !!mimetype && csvMimes.includes(mimetype);
   }
 
   private coerceValue(value: unknown, type: PgType): unknown {
@@ -416,8 +590,13 @@ export class GstService {
         const d = new Date(String(value));
         return Number.isNaN(d.getTime()) ? null : d.toISOString();
       }
-      case 'BOOLEAN':
+      case 'BOOLEAN': {
+        if (typeof value === 'boolean') return value;
+        const s = String(value).trim().toLowerCase();
+        if (['true', '1', 'yes', 'y'].includes(s)) return true;
+        if (['false', '0', 'no', 'n'].includes(s)) return false;
         return Boolean(value);
+      }
       case 'TEXT':
       default:
         return String(value);

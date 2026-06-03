@@ -30,8 +30,8 @@ export class GstController {
 
   /**
    * POST /gst/upload
-   * Multipart/form-data:
-   *   - file:      .xlsx / .xls file (required)
+   * multipart/form-data:
+   *   - file:      .xlsx / .xls / .csv file (required)
    *   - tableName: target table name to create in Postgres (required)
    *
    * Asynchronously offloads processing to RabbitMQ queue.
@@ -58,31 +58,38 @@ export class GstController {
       );
     }
 
-    const allowed = [
+    const allowedMime = [
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'application/vnd.ms-excel',
       'application/octet-stream',
+      'text/csv',
+      'application/csv',
+      'text/plain',
     ];
-    if (file.mimetype && !allowed.includes(file.mimetype)) {
+    const allowedExt = ['.xlsx', '.xls', '.csv'];
+    const ext = (file.originalname || '')
+      .toLowerCase()
+      .slice(((file.originalname || '').lastIndexOf('.') >>> 0));
+    const mimeOk = !file.mimetype || allowedMime.includes(file.mimetype);
+    const extOk = allowedExt.includes(ext);
+    if (!mimeOk && !extOk) {
       throw new BadRequestException(
-        `Unsupported file type: ${file.mimetype}. Upload an .xlsx or .xls file.`,
+        `Unsupported file type: ${file.mimetype || ext}. Upload an .xlsx, .xls or .csv file.`,
       );
     }
 
-    // 1. Cache the file to local temp directory
     const tempPath = await this.fileStorageService.saveBuffer(
       file.buffer,
       file.originalname,
     );
 
-    // 2. Create tracking job in database
     const job = await this.gstService.createJob('EXCEL', {
       originalName: file.originalname,
+      mimetype: file.mimetype,
       tableName,
       tempPath,
     });
 
-    // 3. Queue import (RabbitMQ) or process inline when RMQ is disabled
     if (this.excelClient) {
       this.excelClient.emit('excel_import', {
         jobId: job.id,
@@ -118,16 +125,14 @@ export class GstController {
     if (!tableName || !tableName.trim()) {
       throw new BadRequestException('"tableName" is required.');
     }
-    const count = Number(totalRecords) || 10000; // Default 10k rows
+    const count = Number(totalRecords) || 10000;
 
-    // 1. Create API Job
     const job = await this.gstService.createJob('API', {
       endpoint,
       totalRecords: count,
       tableName,
     });
 
-    // 2. Queue parent task (RabbitMQ) or process inline when RMQ is disabled
     if (this.apiParentClient) {
       this.apiParentClient.emit('api_parent', {
         jobId: job.id,
