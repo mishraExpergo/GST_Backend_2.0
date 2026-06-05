@@ -15,14 +15,18 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ClientProxy } from '@nestjs/microservices';
 import { GstService } from './gst.service';
+import { GstComplianceService } from './gst-compliance.service';
 import { FileStorageService } from '../shared/services/file-storage.service';
 
 @Controller('gst')
 export class GstController {
   constructor(
     private readonly gstService: GstService,
+    private readonly gstComplianceService: GstComplianceService,
     private readonly fileStorageService: FileStorageService,
-    @Optional() @Inject('EXCEL_SERVICE') private readonly excelClient?: ClientProxy,
+    @Optional()
+    @Inject('EXCEL_SERVICE')
+    private readonly excelClient?: ClientProxy,
     @Optional()
     @Inject('API_PARENT_SERVICE')
     private readonly apiParentClient?: ClientProxy,
@@ -69,7 +73,7 @@ export class GstController {
     const allowedExt = ['.xlsx', '.xls', '.csv'];
     const ext = (file.originalname || '')
       .toLowerCase()
-      .slice(((file.originalname || '').lastIndexOf('.') >>> 0));
+      .slice((file.originalname || '').lastIndexOf('.') >>> 0);
     const mimeOk = !file.mimetype || allowedMime.includes(file.mimetype);
     const extOk = allowedExt.includes(ext);
     if (!mimeOk && !extOk) {
@@ -141,12 +145,7 @@ export class GstController {
         tableName,
       });
     } else {
-      void this.gstService.processApiParent(
-        job.id,
-        endpoint,
-        count,
-        tableName,
-      );
+      void this.gstService.processApiParent(job.id, endpoint, count, tableName);
     }
 
     return {
@@ -155,6 +154,21 @@ export class GstController {
       status: job.status,
       checkStatusUrl: `/gst/status/${job.id}`,
     };
+  }
+
+  /**
+   * GET /gst/status/:jobId
+   * Return real-time job status and page ingestion statistics.
+   */
+  /**
+   * POST /gst/compliance/verify-loans
+   * Fetch gst_no and pan_no for all loanIds from Postgres, verify GSTIN,
+   * search when status exists in verify response, and store results in MongoDB.
+   */
+  @Post('compliance/verify-loans')
+  @HttpCode(HttpStatus.OK)
+  async verifyLoans(@Body('tableName') tableName?: string) {
+    return this.gstComplianceService.processAllLoans(tableName);
   }
 
   /**

@@ -1,8 +1,13 @@
+import { config } from 'dotenv';
+import { join } from 'path';
+
+config({ path: join(__dirname, '..', '.env') });
+
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { Transport } from '@nestjs/microservices';
 import { networkInterfaces } from 'os';
-import { AppModule } from './app.module';
+import { resolveMongoMode } from './config/mongo.config';
 import {
   ALL_QUEUES,
   pingRabbitMQ,
@@ -24,9 +29,7 @@ async function resolveRabbitMQMode(logger: Logger): Promise<boolean> {
   } catch (err) {
     logger.warn('=================================================');
     logger.warn(`RabbitMQ unreachable at ${sanitizeAmqpUrl(rmqUrl)}`);
-    logger.warn(
-      `Reason: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    logger.warn(`Reason: ${err instanceof Error ? err.message : String(err)}`);
     logger.warn('Falling back to INLINE job processing for this session.');
     logger.warn(
       'Start RabbitMQ and set ENABLE_RABBITMQ=true to use queue mode.',
@@ -52,9 +55,17 @@ function getLocalIPs(): string[] {
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
+  const enableMongo = await resolveMongoMode(logger);
   const enableRabbitMQ = await resolveRabbitMQMode(logger);
 
+  const { AppModule } = await import('./app.module.js');
   const app = await NestFactory.create(AppModule);
+
+  if (enableMongo) {
+    logger.log('MongoDB: ENABLED (GST compliance records)');
+  } else {
+    logger.log('MongoDB: DISABLED');
+  }
 
   if (enableRabbitMQ) {
     const rmqUrl = process.env.RABBITMQ_URL || 'amqp://localhost:5672';
@@ -130,4 +141,4 @@ async function bootstrap() {
   logger.log(`PID:              ${process.pid}`);
   logger.log('=================================================');
 }
-bootstrap();
+void bootstrap();

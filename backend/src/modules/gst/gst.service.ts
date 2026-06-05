@@ -88,7 +88,10 @@ export class GstService {
 
       const buffer = fs.readFileSync(filePath);
       const workbook = isCsv
-        ? XLSX.read(buffer.toString('utf8'), { type: 'string', cellDates: true })
+        ? XLSX.read(buffer.toString('utf8'), {
+            type: 'string',
+            cellDates: true,
+          })
         : XLSX.read(buffer, { type: 'buffer', cellDates: true });
       const sheetName = workbook.SheetNames[0];
       if (!sheetName) {
@@ -113,7 +116,9 @@ export class GstService {
       }
       const rawHeaders = Array.from(headerSet);
       if (rawHeaders.length === 0) {
-        throw new BadRequestException('No columns detected in the uploaded file.');
+        throw new BadRequestException(
+          'No columns detected in the uploaded file.',
+        );
       }
 
       const columns: ColumnDef[] = rawHeaders.map((header) => ({
@@ -134,7 +139,11 @@ export class GstService {
 
       await this.jobRepo.update(jobId, { totalChunks: 1 });
 
-      const rowsInserted = await this.appendRowsToTable(tableName, rows, columns);
+      const rowsInserted = await this.appendRowsToTable(
+        tableName,
+        rows,
+        columns,
+      );
 
       const completedMetadata: Record<string, any> = {
         ...meta,
@@ -364,7 +373,10 @@ export class GstService {
       return;
     }
 
-    const existingCols = await this.getExistingColumnTypes(queryRunner, tableName);
+    const existingCols = await this.getExistingColumnTypes(
+      queryRunner,
+      tableName,
+    );
 
     for (const col of insertColumns) {
       const existingType = existingCols.get(col.name);
@@ -390,13 +402,13 @@ export class GstService {
     queryRunner: QueryRunner,
     tableName: string,
   ): Promise<boolean> {
-    const result: Array<{ exists: boolean }> = await queryRunner.query(
+    const result = (await queryRunner.query(
       `SELECT EXISTS (
          SELECT 1 FROM information_schema.tables
          WHERE table_schema = current_schema() AND table_name = $1
        ) AS "exists"`,
       [tableName],
-    );
+    )) as Array<{ exists: boolean }>;
     return Boolean(result?.[0]?.exists);
   }
 
@@ -404,12 +416,11 @@ export class GstService {
     queryRunner: QueryRunner,
     tableName: string,
   ): Promise<Map<string, PgType>> {
-    const rows: Array<{ column_name: string; data_type: string }> =
-      await queryRunner.query(
-        `SELECT column_name, data_type FROM information_schema.columns
+    const rows = (await queryRunner.query(
+      `SELECT column_name, data_type FROM information_schema.columns
          WHERE table_schema = current_schema() AND table_name = $1`,
-        [tableName],
-      );
+      [tableName],
+    )) as Array<{ column_name: string; data_type: string }>;
     const map = new Map<string, PgType>();
     for (const r of rows) {
       map.set(r.column_name, this.mapPgDataType(r.data_type));
@@ -576,6 +587,19 @@ export class GstService {
     return !!mimetype && csvMimes.includes(mimetype);
   }
 
+  private safeStringify(val: unknown): string {
+    if (typeof val === 'string') return val;
+    if (
+      typeof val === 'number' ||
+      typeof val === 'boolean' ||
+      typeof val === 'bigint'
+    ) {
+      return String(val);
+    }
+    if (val === null || val === undefined) return '';
+    return JSON.stringify(val);
+  }
+
   private coerceValue(value: unknown, type: PgType): unknown {
     if (value === null || value === undefined || value === '') return null;
 
@@ -587,19 +611,19 @@ export class GstService {
       }
       case 'TIMESTAMP': {
         if (value instanceof Date) return value.toISOString();
-        const d = new Date(String(value));
+        const d = new Date(this.safeStringify(value));
         return Number.isNaN(d.getTime()) ? null : d.toISOString();
       }
       case 'BOOLEAN': {
         if (typeof value === 'boolean') return value;
-        const s = String(value).trim().toLowerCase();
+        const s = this.safeStringify(value).trim().toLowerCase();
         if (['true', '1', 'yes', 'y'].includes(s)) return true;
         if (['false', '0', 'no', 'n'].includes(s)) return false;
         return Boolean(value);
       }
       case 'TEXT':
       default:
-        return String(value);
+        return this.safeStringify(value);
     }
   }
 

@@ -36,7 +36,9 @@ export class FileStorageService implements OnModuleInit {
         this.logger.log(`Temporary file deleted: ${filePath}`);
       }
     } catch (err) {
-      this.logger.error(`Failed to delete temporary file ${filePath}: ${(err as Error).message}`);
+      this.logger.error(
+        `Failed to delete temporary file ${filePath}: ${(err as Error).message}`,
+      );
     }
   }
 

@@ -15,7 +15,10 @@ export const getRabbitMQClientConfig = (
   configService: ConfigService,
   queueName: string,
 ): ClientProvider => {
-  const url = configService.get<string>('RABBITMQ_URL', 'amqp://localhost:5672');
+  const url = configService.get<string>(
+    'RABBITMQ_URL',
+    'amqp://localhost:5672',
+  );
   return {
     transport: Transport.RMQ,
     options: {
