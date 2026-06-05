@@ -1,8 +1,18 @@
+import * as dns from 'node:dns';
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { Transport } from '@nestjs/microservices';
 import { networkInterfaces } from 'os';
 import { AppModule } from './app.module';
+
+// On some Windows/VPN setups Node's DNS resolver (c-ares) fails SRV lookups
+// with `querySrv ECONNREFUSED`, which breaks `mongodb+srv://` (Atlas) URIs even
+// when the OS resolver works. Force public DNS resolvers for these lookups.
+if (process.env.DNS_SERVERS) {
+  dns.setServers(process.env.DNS_SERVERS.split(',').map((s) => s.trim()));
+} else {
+  dns.setServers(['8.8.8.8', '1.1.1.1']);
+}
 import {
   ALL_QUEUES,
   pingRabbitMQ,

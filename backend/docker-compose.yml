@@ -1,6 +1,16 @@
-version: '3.8'
-
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: gst_postgres
+    ports:
+      - '5432:5432'
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-gst_app}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
   rabbitmq:
     image: rabbitmq:3.12-management-alpine
     container_name: gst_rabbitmq
@@ -14,4 +24,5 @@ services:
       - rabbitmq_data:/var/lib/rabbitmq
 
 volumes:
+  postgres_data:
   rabbitmq_data:
