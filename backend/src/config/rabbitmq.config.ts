@@ -7,6 +7,8 @@ export const QUEUES = {
   EXCEL_IMPORT: 'gst_excel_import_queue',
   API_PARENT: 'gst_api_parent_queue',
   API_CHUNK: 'gst_api_chunk_queue',
+  VERIFY_PARENT: 'gst_verify_parent_queue',
+  VERIFY_CHUNK: 'gst_verify_chunk_queue',
 } as const;
 
 export const ALL_QUEUES = Object.values(QUEUES);

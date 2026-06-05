@@ -66,6 +66,8 @@ async function bootstrap() {
     logger.log(`  - ${QUEUES.EXCEL_IMPORT}  (excel_import)`);
     logger.log(`  - ${QUEUES.API_PARENT}     (api_parent)`);
     logger.log(`  - ${QUEUES.API_CHUNK}      (api_chunk)`);
+    logger.log(`  - ${QUEUES.VERIFY_PARENT}  (verify_parent)`);
+    logger.log(`  - ${QUEUES.VERIFY_CHUNK}   (verify_chunk)`);
     logger.log('Connecting microservice consumers...');
 
     app.connectMicroservice({
@@ -93,6 +95,26 @@ async function bootstrap() {
       options: {
         urls: [rmqUrl],
         queue: 'gst_api_chunk_queue',
+        queueOptions: { durable: true },
+        noAck: false,
+      },
+    });
+
+    app.connectMicroservice({
+      transport: Transport.RMQ,
+      options: {
+        urls: [rmqUrl],
+        queue: QUEUES.VERIFY_PARENT,
+        queueOptions: { durable: true },
+        noAck: false,
+      },
+    });
+
+    app.connectMicroservice({
+      transport: Transport.RMQ,
+      options: {
+        urls: [rmqUrl],
+        queue: QUEUES.VERIFY_CHUNK,
         queueOptions: { durable: true },
         noAck: false,
       },

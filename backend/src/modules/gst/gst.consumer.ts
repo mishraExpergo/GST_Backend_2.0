@@ -1,12 +1,22 @@
 import { Controller, Logger } from '@nestjs/common';
 import { EventPattern, Payload, Ctx, RmqContext } from '@nestjs/microservices';
 import { GstService } from './gst.service';
+import { GstComplianceService } from './services/gst-compliance.service';
+
+interface SourceRow {
+  loan_id: string;
+  gst_no: string | null;
+  pan: string | null;
+}
 
 @Controller()
 export class GstConsumer {
   private readonly logger = new Logger(GstConsumer.name);
 
-  constructor(private readonly gstService: GstService) {}
+  constructor(
+    private readonly gstService: GstService,
+    private readonly gstComplianceService: GstComplianceService,
+  ) {}
 
   /**
    * Consumes Excel Import Tasks
@@ -78,6 +88,66 @@ export class GstConsumer {
       this.logger.log(`Successfully finished API Ingestion chunk: ${data.taskId}`);
     } catch (err) {
       this.logger.error(`Error processing API Ingestion chunk ${data.taskId}: ${(err as Error).message}`);
+      channel.nack(originalMsg, false, false);
+    }
+  }
+
+  /**
+   * Consumes GSTIN verify-and-fetch Parent/Orchestrator Tasks
+   */
+  @EventPattern('verify_parent')
+  async handleVerifyParent(
+    @Payload() data: { jobId: string; tableName: string },
+    @Ctx() context: RmqContext,
+  ) {
+    const channel = context.getChannelRef();
+    const originalMsg = context.getMessage();
+
+    this.logger.log(`Received verify_parent event for Job: ${data.jobId}`);
+    try {
+      await this.gstComplianceService.processVerifyParent(
+        data.jobId,
+        data.tableName,
+      );
+      channel.ack(originalMsg);
+      this.logger.log(`Successfully orchestrated verify parent Job: ${data.jobId}`);
+    } catch (err) {
+      this.logger.error(`Error orchestrating verify parent Job ${data.jobId}: ${(err as Error).message}`);
+      channel.nack(originalMsg, false, false);
+    }
+  }
+
+  /**
+   * Consumes GSTIN verify-and-fetch Batch/Chunk Tasks
+   */
+  @EventPattern('verify_chunk')
+  async handleVerifyChunk(
+    @Payload()
+    data: {
+      taskId: string;
+      jobId: string;
+      tableName: string;
+      rows: SourceRow[];
+    },
+    @Ctx() context: RmqContext,
+  ) {
+    const channel = context.getChannelRef();
+    const originalMsg = context.getMessage();
+
+    this.logger.log(
+      `Received verify_chunk event for Task: ${data.taskId} (Job: ${data.jobId})`,
+    );
+    try {
+      await this.gstComplianceService.processVerifyChunk(
+        data.taskId,
+        data.jobId,
+        data.tableName,
+        data.rows,
+      );
+      channel.ack(originalMsg);
+      this.logger.log(`Successfully finished verify chunk: ${data.taskId}`);
+    } catch (err) {
+      this.logger.error(`Error processing verify chunk ${data.taskId}: ${(err as Error).message}`);
       channel.nack(originalMsg, false, false);
     }
   }

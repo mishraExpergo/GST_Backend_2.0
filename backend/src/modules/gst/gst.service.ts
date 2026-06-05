@@ -11,7 +11,7 @@ import { ClientProxy } from '@nestjs/microservices';
 import * as XLSX from 'xlsx';
 import * as fs from 'fs';
 import { Job, JobStatus, JobType } from '../../entities/job.entity';
-import { JobTask } from '../../entities/job-task.entity';
+import { JobTask, TaskStatus } from '../../entities/job-task.entity';
 import { FileStorageService } from '../shared/services/file-storage.service';
 
 type PgType = 'INTEGER' | 'NUMERIC' | 'TIMESTAMP' | 'BOOLEAN' | 'TEXT';
@@ -61,6 +61,86 @@ export class GstService {
   ): Promise<void> {
     await this.jobRepo.update(jobId, { status, errorMessage });
     this.logger.log(`Job ${jobId} status updated to ${status}`);
+  }
+
+  async setJobTotalChunks(jobId: string, totalChunks: number): Promise<void> {
+    await this.jobRepo.update(jobId, { totalChunks });
+  }
+
+  async setJobProgress(jobId: string, completedChunks: number): Promise<void> {
+    await this.jobRepo.update(jobId, { completedChunks });
+  }
+
+  async finishJob(
+    jobId: string,
+    metadata: Record<string, any>,
+  ): Promise<void> {
+    const job = await this.jobRepo.findOne({ where: { id: jobId } });
+    await this.jobRepo.update(jobId, {
+      status: 'COMPLETED',
+      metadata: { ...(job?.metadata ?? {}), ...metadata },
+    });
+    this.logger.log(`Job ${jobId} completed`);
+  }
+
+  // ------------------ Task Helpers ------------------
+
+  async createTask(
+    jobId: string,
+    payload: Record<string, any>,
+  ): Promise<JobTask> {
+    const task = this.taskRepo.create({ jobId, status: 'PENDING', payload });
+    return this.taskRepo.save(task);
+  }
+
+  async getJobTasks(jobId: string): Promise<JobTask[]> {
+    return this.taskRepo.find({ where: { jobId } });
+  }
+
+  /** Update a task's status and merge a result object into its payload. */
+  async markTask(
+    taskId: string,
+    status: TaskStatus,
+    patch: {
+      result?: Record<string, any>;
+      errorMessage?: string;
+      attempts?: number;
+    } = {},
+  ): Promise<void> {
+    const task = await this.taskRepo.findOne({ where: { id: taskId } });
+    const payload = { ...(task?.payload ?? {}) };
+    if (patch.result !== undefined) payload.result = patch.result;
+
+    await this.taskRepo.update(taskId, {
+      status,
+      payload,
+      ...(patch.errorMessage !== undefined
+        ? { errorMessage: patch.errorMessage }
+        : {}),
+      ...(patch.attempts !== undefined ? { attempts: patch.attempts } : {}),
+    });
+  }
+
+  /**
+   * Atomically increment completedChunks and report whether this call was the
+   * one that completed the job (race-safe across concurrent workers).
+   */
+  async incrementCompletedChunks(
+    jobId: string,
+  ): Promise<{ completed: number; total: number; justCompleted: boolean }> {
+    const result = await this.jobRepo
+      .createQueryBuilder()
+      .update(Job)
+      .set({ completedChunks: () => '"completedChunks" + 1' })
+      .where('id = :id', { id: jobId })
+      .returning(['completedChunks', 'totalChunks'])
+      .execute();
+
+    const raw = (result.raw?.[0] ?? {}) as Record<string, any>;
+    const completed = Number(raw.completedChunks ?? raw.completedchunks ?? 0);
+    const total = Number(raw.totalChunks ?? raw.totalchunks ?? 0);
+    const justCompleted = total > 0 && completed === total;
+    return { completed, total, justCompleted };
   }
 
   // ------------------ Asynchronous Workers ------------------

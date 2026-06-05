@@ -15,6 +15,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ClientProxy } from '@nestjs/microservices';
 import { GstService } from './gst.service';
+import { GstComplianceService } from './services/gst-compliance.service';
 import { FileStorageService } from '../shared/services/file-storage.service';
 
 @Controller('gst')
@@ -22,6 +23,7 @@ export class GstController {
   constructor(
     private readonly gstService: GstService,
     private readonly fileStorageService: FileStorageService,
+    private readonly gstComplianceService: GstComplianceService,
     @Optional() @Inject('EXCEL_SERVICE') private readonly excelClient?: ClientProxy,
     @Optional()
     @Inject('API_PARENT_SERVICE')
@@ -151,6 +153,31 @@ export class GstController {
 
     return {
       message: 'Bulk API data ingestion job initialized successfully.',
+      jobId: job.id,
+      status: job.status,
+      checkStatusUrl: `/gst/status/${job.id}`,
+    };
+  }
+
+  /**
+   * POST /gst/verify-and-fetch
+   * Reads loanId / gst_no / pan from the uploaded-data table, verifies each
+   * GSTIN against the external GST API, and (when the verify response contains
+   * a status) fetches full GSTIN details and stores them in MongoDB.
+   *
+   * Runs in the background; poll GET /gst/status/:jobId for progress.
+   *
+   * body (optional):
+   *   - tableName: source Postgres table (defaults to "gst_uploaded_file_data")
+   */
+  @Post('verify-and-fetch')
+  @HttpCode(HttpStatus.ACCEPTED)
+  async verifyAndFetch(@Body('tableName') tableName?: string) {
+    const job = await this.gstComplianceService.startVerifyAndFetch(tableName);
+
+    return {
+      message:
+        'GSTIN verification & fetch job accepted for background processing.',
       jobId: job.id,
       status: job.status,
       checkStatusUrl: `/gst/status/${job.id}`,
