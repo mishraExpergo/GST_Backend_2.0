@@ -140,7 +140,7 @@ export class GstApiService {
       headers: {
         'content-type': 'application/json',
         authorization: token,
-        'x-api-key': this.config.get<string>('GST_API_KEY', ''),
+        'x-api-key': this.config.get<string>('GST_API_KEY_LIVE', ''),
         'x-api-version': this.config.get<string>('GST_API_VERSION', ''),
         'x-accept-cache': this.config.get<string>('GST_API_ACCEPT_CACHE', 'true'),
       },

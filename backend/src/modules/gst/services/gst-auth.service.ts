@@ -62,8 +62,8 @@ export class GstAuthService {
         undefined,
         {
           headers: {
-            'x-api-key': this.config.getOrThrow<string>('GST_API_KEY'),
-            'x-api-secret': this.config.getOrThrow<string>('GST_API_SECRET'),
+            'x-api-key': this.config.getOrThrow<string>('GST_API_KEY_LIVE'),
+            'x-api-secret': this.config.getOrThrow<string>('GST_API_SECRET_LIVE'),
             'x-api-version': this.config.get<string>('GST_API_VERSION', ''),
           },
           timeout: this.timeoutMs,

@@ -28,11 +28,14 @@ interface BatchResult {
   verified: number;
   stored: number;
   skippedNoGstin: number;
+  skippedInvalidGstin: number;
   skippedNoStatus: number;
   failed: number;
 }
 
 const DEFAULT_SOURCE_TABLE = 'gst_uploaded_file_data';
+const GSTIN_PATTERN =
+  /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
 
 @Injectable()
 export class GstComplianceService {
@@ -111,6 +114,7 @@ export class GstComplianceService {
           verified: 0,
           stored: 0,
           skippedNoGstin: 0,
+          skippedInvalidGstin: 0,
           skippedNoStatus: 0,
           failed: 0,
           note: 'No rows found in source table.',
@@ -170,6 +174,7 @@ export class GstComplianceService {
       verified: 0,
       stored: 0,
       skippedNoGstin: 0,
+      skippedInvalidGstin: 0,
       skippedNoStatus: 0,
       failed: 0,
     };
@@ -204,9 +209,17 @@ export class GstComplianceService {
     tableName: string,
     result: BatchResult,
   ): Promise<void> {
-    const gstin = (row.gst_no ?? '').trim();
+    const gstin = (row.gst_no ?? '').trim().toUpperCase();
     if (!gstin) {
       result.skippedNoGstin++;
+      return;
+    }
+    if (!this.isValidGstin(gstin)) {
+      result.skippedInvalidGstin++;
+      await this.markRowStatus(tableName, row.loan_id, 'INVALID_GSTIN');
+      this.logger.warn(
+        `Skipping invalid GSTIN for loanId=${row.loan_id}: ${gstin}`,
+      );
       return;
     }
 
@@ -261,6 +274,7 @@ export class GstComplianceService {
       verified: 0,
       stored: 0,
       skippedNoGstin: 0,
+      skippedInvalidGstin: 0,
       skippedNoStatus: 0,
       failed: 0,
     };
@@ -272,6 +286,7 @@ export class GstComplianceService {
       summary.verified += r.verified ?? 0;
       summary.stored += r.stored ?? 0;
       summary.skippedNoGstin += r.skippedNoGstin ?? 0;
+      summary.skippedInvalidGstin += r.skippedInvalidGstin ?? 0;
       summary.skippedNoStatus += r.skippedNoStatus ?? 0;
       summary.failed += r.failed ?? 0;
     }
@@ -305,6 +320,10 @@ export class GstComplianceService {
     return this.dataSource.query(
       `SELECT loan_id, gst_no, pan FROM "${tableName}"`,
     );
+  }
+
+  private isValidGstin(gstin: string): boolean {
+    return GSTIN_PATTERN.test(gstin);
   }
 
   /** Simple bounded-concurrency pool (no external dependency). */
