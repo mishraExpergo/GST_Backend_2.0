@@ -17,6 +17,14 @@ import {
   GstComplianceRecord,
   GstComplianceSchema,
 } from './schemas/gst-compliance.schema';
+import {
+  GstrComplianceRecord,
+  GstrComplianceSchema,
+} from './schemas/gst-gstr-compliance.schema';
+import {
+  Gstr2bComplianceRecord,
+  Gstr2bComplianceSchema,
+} from './schemas/gst-2b-compliance.schema';
 
 const enableRabbitMQ = process.env.ENABLE_RABBITMQ === 'true';
 const enableMongo = process.env.ENABLE_MONGO === 'true';
@@ -28,6 +36,14 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
       ? [
           MongooseModule.forFeature([
             { name: GstComplianceRecord.name, schema: GstComplianceSchema },
+            {
+              name: GstrComplianceRecord.name,
+              schema: GstrComplianceSchema,
+            },
+            {
+              name: Gstr2bComplianceRecord.name,
+              schema: Gstr2bComplianceSchema,
+            },
           ]),
         ]
       : []),
@@ -42,20 +58,6 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
                 getRabbitMQClientConfig(configService, QUEUES.EXCEL_IMPORT),
             },
             {
-              name: 'API_PARENT_SERVICE',
-              imports: [ConfigModule],
-              inject: [ConfigService],
-              useFactory: (configService: ConfigService) =>
-                getRabbitMQClientConfig(configService, QUEUES.API_PARENT),
-            },
-            {
-              name: 'API_CHUNK_SERVICE',
-              imports: [ConfigModule],
-              inject: [ConfigService],
-              useFactory: (configService: ConfigService) =>
-                getRabbitMQClientConfig(configService, QUEUES.API_CHUNK),
-            },
-            {
               name: 'VERIFY_PARENT_SERVICE',
               imports: [ConfigModule],
               inject: [ConfigService],
@@ -68,6 +70,40 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
               inject: [ConfigService],
               useFactory: (configService: ConfigService) =>
                 getRabbitMQClientConfig(configService, QUEUES.VERIFY_CHUNK),
+            },
+            {
+              name: 'VERIFY_GSTR_PARENT_SERVICE',
+              imports: [ConfigModule],
+              inject: [ConfigService],
+              useFactory: (configService: ConfigService) =>
+                getRabbitMQClientConfig(
+                  configService,
+                  QUEUES.VERIFY_GSTR_PARENT,
+                ),
+            },
+            {
+              name: 'VERIFY_GSTR_CHUNK_SERVICE',
+              imports: [ConfigModule],
+              inject: [ConfigService],
+              useFactory: (configService: ConfigService) =>
+                getRabbitMQClientConfig(
+                  configService,
+                  QUEUES.VERIFY_GSTR_CHUNK,
+                ),
+            },
+            {
+              name: 'VERIFY_2B_PARENT_SERVICE',
+              imports: [ConfigModule],
+              inject: [ConfigService],
+              useFactory: (configService: ConfigService) =>
+                getRabbitMQClientConfig(configService, QUEUES.VERIFY_2B_PARENT),
+            },
+            {
+              name: 'VERIFY_2B_CHUNK_SERVICE',
+              imports: [ConfigModule],
+              inject: [ConfigService],
+              useFactory: (configService: ConfigService) =>
+                getRabbitMQClientConfig(configService, QUEUES.VERIFY_2B_CHUNK),
             },
           ]),
         ]

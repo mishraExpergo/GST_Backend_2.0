@@ -56,6 +56,50 @@ export class GstApiService {
   }
 
   /**
+   * POST /gst/compliance/public/gstrs/track
+   * Tracks GSTR filing status for a GSTIN in a given financial year.
+   * `financialYear` comes from the caller (frontend); `gstr` is left as the
+   * API default ("null") to return all return types.
+   */
+  async trackGstr(
+    gstin: string,
+    financialYear: string,
+  ): Promise<Record<string, any>> {
+    const params = new URLSearchParams({
+      gstr: 'null',
+      financial_year: financialYear,
+    });
+    const url = `${this.baseUrl}/gst/compliance/public/gstrs/track?${params.toString()}`;
+    return this.authedPost<Record<string, any>>(url, { gstin });
+  }
+
+  /**
+   * POST /gst/analytics/gstr-2b-reconciliation
+   * Runs GSTR-2B reconciliation for a GSTIN. All request fields other than the
+   * GSTIN (year, month, filing preference, reconciliation criteria) are
+   * supplied by the caller (frontend).
+   */
+  async reconcileGstr2b(
+    gstin: string,
+    params: {
+      year: number;
+      month: number;
+      filingPreference: string;
+      reconciliationCriteria: string;
+    },
+  ): Promise<Record<string, any>> {
+    const url = `${this.baseUrl}/gst/analytics/gstr-2b-reconciliation`;
+    return this.authedPost<Record<string, any>>(url, {
+      '@entity': 'in.co.sandbox.gst.analytics.gstr-2b_reconciliation.request',
+      gstin,
+      year: params.year,
+      month: params.month,
+      filing_preference: params.filingPreference,
+      reconciliation_criteria: params.reconciliationCriteria,
+    });
+  }
+
+  /**
    * POST with the access token. Handles:
    *  - 401/403: re-authenticate once and retry.
    *  - 429 / 5xx / network errors: retry with exponential backoff + jitter.

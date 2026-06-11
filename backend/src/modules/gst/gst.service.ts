@@ -1,13 +1,6 @@
-import {
-  BadRequestException,
-  Inject,
-  Injectable,
-  Logger,
-  Optional,
-} from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, QueryRunner, Repository } from 'typeorm';
-import { ClientProxy } from '@nestjs/microservices';
 import * as XLSX from 'xlsx';
 import * as fs from 'fs';
 import { Job, JobStatus, JobType } from '../../entities/job.entity';
@@ -31,9 +24,6 @@ export class GstService {
     @InjectRepository(Job) private readonly jobRepo: Repository<Job>,
     @InjectRepository(JobTask) private readonly taskRepo: Repository<JobTask>,
     private readonly fileStorageService: FileStorageService,
-    @Optional()
-    @Inject('API_CHUNK_SERVICE')
-    private readonly apiChunkClient?: ClientProxy,
   ) {}
 
   // ------------------ Job Tracking Helpers ------------------
@@ -234,153 +224,6 @@ export class GstService {
     }
   }
 
-  /**
-   * API Ingestion Orchestrator
-   */
-  async processApiParent(
-    jobId: string,
-    endpoint: string,
-    totalRecords: number,
-    rawTableName: string,
-  ) {
-    try {
-      await this.jobRepo.update(jobId, { status: 'PROCESSING' });
-      const tableName = this.sanitizeIdentifier(rawTableName);
-
-      const sample = this.getMockSampleRecord();
-      const headers = Object.keys(sample);
-      const columns: ColumnDef[] = headers.map((header) => ({
-        raw: header,
-        name: this.sanitizeIdentifier(header),
-        type: this.inferColumnType([sample], header),
-      }));
-
-      const queryRunner = this.dataSource.createQueryRunner();
-      await queryRunner.connect();
-      try {
-        await queryRunner.query(`DROP TABLE IF EXISTS "${tableName}"`);
-        const createSql = this.buildCreateTableSql(tableName, columns);
-        this.logger.log(`Parent Orchestrator created table: ${tableName}`);
-        await queryRunner.query(createSql);
-      } finally {
-        await queryRunner.release();
-      }
-
-      const limit = 1000;
-      const totalChunks = Math.ceil(totalRecords / limit);
-
-      await this.jobRepo.update(jobId, { totalChunks });
-
-      for (let page = 1; page <= totalChunks; page++) {
-        const task = this.taskRepo.create({
-          jobId,
-          status: 'PENDING',
-          payload: { page, limit, endpoint, tableName },
-        });
-        const savedTask = await this.taskRepo.save(task);
-
-        if (this.apiChunkClient) {
-          this.apiChunkClient.emit('api_chunk', {
-            taskId: savedTask.id,
-            jobId,
-            endpoint,
-            page,
-            limit,
-            tableName,
-          });
-        } else {
-          void this.processApiChunk(
-            savedTask.id,
-            jobId,
-            endpoint,
-            page,
-            limit,
-            tableName,
-          );
-        }
-      }
-
-      this.logger.log(`Orchestrated ${totalChunks} chunks for Job ${jobId}`);
-    } catch (err) {
-      await this.updateJobStatus(jobId, 'FAILED', (err as Error).message);
-      throw err;
-    }
-  }
-
-  /**
-   * Concurrent Chunk Worker
-   */
-  async processApiChunk(
-    taskId: string,
-    jobId: string,
-    endpoint: string,
-    page: number,
-    limit: number,
-    tableName: string,
-  ) {
-    await this.taskRepo.update(taskId, { status: 'PROCESSING', attempts: 1 });
-
-    try {
-      const records = this.fetchMockApiPage(page, limit);
-
-      const sample = this.getMockSampleRecord();
-      const headers = Object.keys(sample);
-      const columns: ColumnDef[] = headers.map((header) => ({
-        raw: header,
-        name: this.sanitizeIdentifier(header),
-        type: this.inferColumnType([sample], header),
-      }));
-
-      const queryRunner = this.dataSource.createQueryRunner();
-      await queryRunner.connect();
-      await queryRunner.startTransaction();
-
-      try {
-        const colList = columns.map((c) => `"${c.name}"`).join(', ');
-        const params: unknown[] = [];
-        const valueRows: string[] = [];
-
-        for (const row of records) {
-          const rowPlaceholders: string[] = [];
-          for (const col of columns) {
-            rowPlaceholders.push(`$${params.length + 1}`);
-            params.push(this.coerceValue(row[col.raw], col.type));
-          }
-          valueRows.push(`(${rowPlaceholders.join(', ')})`);
-        }
-
-        const insertSql = `INSERT INTO "${tableName}" (${colList}) VALUES ${valueRows.join(', ')}`;
-        await queryRunner.query(insertSql, params);
-
-        await queryRunner.commitTransaction();
-      } catch (err) {
-        await queryRunner.rollbackTransaction();
-        throw err;
-      } finally {
-        await queryRunner.release();
-      }
-
-      await this.taskRepo.update(taskId, { status: 'COMPLETED' });
-
-      const job = await this.jobRepo.findOne({ where: { id: jobId } });
-      if (job) {
-        const newCompleted = job.completedChunks + 1;
-        const newStatus: JobStatus =
-          newCompleted >= job.totalChunks ? 'COMPLETED' : 'PROCESSING';
-        await this.jobRepo.update(jobId, {
-          completedChunks: newCompleted,
-          status: newStatus,
-        });
-      }
-    } catch (err) {
-      await this.taskRepo.update(taskId, {
-        status: 'FAILED',
-        errorMessage: (err as Error).message,
-      });
-      throw err;
-    }
-  }
-
   // ------------------ DB import (append / schema migrate) ------------------
 
   private async appendRowsToTable(
@@ -543,40 +386,6 @@ export class GstService {
       default:
         return 'text';
     }
-  }
-
-  // ------------------ Helper Mock Integrations ------------------
-
-  private getMockSampleRecord(): Record<string, any> {
-    return {
-      gstin: 'string',
-      legal_name: 'string',
-      trade_name: 'string',
-      filing_date: new Date(),
-      taxable_value: 12.34,
-      tax_amount: 56.78,
-      is_active: true,
-      total_invoices: 100,
-    };
-  }
-
-  private fetchMockApiPage(page: number, limit: number): Record<string, any>[] {
-    const records: Record<string, any>[] = [];
-    const offset = (page - 1) * limit;
-
-    for (let i = 0; i < limit; i++) {
-      records.push({
-        gstin: `27AAACS${1000 + i}A1Z${i % 9}`,
-        legal_name: `Taxpayer Enterprise Co ${offset + i}`,
-        trade_name: `Filing Trade Group ${offset + i}`,
-        filing_date: new Date(Date.now() - (i % 30) * 24 * 3600 * 1000),
-        taxable_value: parseFloat((100.5 * (i + 1) + 250).toFixed(2)),
-        tax_amount: parseFloat((18.09 * (i + 1) + 45).toFixed(2)),
-        is_active: i % 15 !== 0,
-        total_invoices: 10 + i,
-      });
-    }
-    return records;
   }
 
   // ----------------------- helpers -----------------------

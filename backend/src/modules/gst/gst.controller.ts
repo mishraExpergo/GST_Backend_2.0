@@ -9,6 +9,7 @@ import {
   Optional,
   Param,
   Post,
+  Query,
   UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
@@ -25,9 +26,6 @@ export class GstController {
     private readonly fileStorageService: FileStorageService,
     private readonly gstComplianceService: GstComplianceService,
     @Optional() @Inject('EXCEL_SERVICE') private readonly excelClient?: ClientProxy,
-    @Optional()
-    @Inject('API_PARENT_SERVICE')
-    private readonly apiParentClient?: ClientProxy,
   ) {}
 
   /**
@@ -111,55 +109,6 @@ export class GstController {
   }
 
   /**
-   * POST /gst/api-ingest
-   * Ingest high-volume external API data concurrently.
-   */
-  @Post('api-ingest')
-  @HttpCode(HttpStatus.ACCEPTED)
-  async triggerApiIngest(
-    @Body('endpoint') endpoint: string,
-    @Body('totalRecords') totalRecords: number,
-    @Body('tableName') tableName: string,
-  ) {
-    if (!endpoint || !endpoint.trim()) {
-      throw new BadRequestException('"endpoint" is required.');
-    }
-    if (!tableName || !tableName.trim()) {
-      throw new BadRequestException('"tableName" is required.');
-    }
-    const count = Number(totalRecords) || 10000;
-
-    const job = await this.gstService.createJob('API', {
-      endpoint,
-      totalRecords: count,
-      tableName,
-    });
-
-    if (this.apiParentClient) {
-      this.apiParentClient.emit('api_parent', {
-        jobId: job.id,
-        endpoint,
-        totalRecords: count,
-        tableName,
-      });
-    } else {
-      void this.gstService.processApiParent(
-        job.id,
-        endpoint,
-        count,
-        tableName,
-      );
-    }
-
-    return {
-      message: 'Bulk API data ingestion job initialized successfully.',
-      jobId: job.id,
-      status: job.status,
-      checkStatusUrl: `/gst/status/${job.id}`,
-    };
-  }
-
-  /**
    * POST /gst/verify-and-fetch
    * Reads loanId / gst_no / pan from the uploaded-data table, verifies each
    * GSTIN against the external GST API, and (when the verify response contains
@@ -178,6 +127,85 @@ export class GstController {
     return {
       message:
         'GSTIN verification & fetch job accepted for background processing.',
+      jobId: job.id,
+      status: job.status,
+      checkStatusUrl: `/gst/status/${job.id}`,
+    };
+  }
+
+  /**
+   * POST /gst/verify-and-fetch-gst-r1
+   * Reads loanId / gst_no / pan from the uploaded-data table, verifies each
+   * GSTIN against the external GST API, and (when the verify response contains
+   * a status) tracks GSTR filing status for the given financial year, storing
+   * the results in a separate MongoDB collection.
+   *
+   * Runs in the background; poll GET /gst/status/:jobId for progress.
+   *
+   * query:
+   *   - financial_year: required, format "YYYY-YY" (e.g. 2023-24)
+   * body (optional):
+   *   - tableName: source Postgres table (defaults to "gst_uploaded_file_data")
+   */
+  @Post('verify-and-fetch-gst-r1')
+  @HttpCode(HttpStatus.ACCEPTED)
+  async verifyAndFetchGstR1(
+    @Query('financial_year') financialYear: string,
+    @Body('tableName') tableName?: string,
+  ) {
+    const job = await this.gstComplianceService.startVerifyAndFetchGstr(
+      financialYear,
+      tableName,
+    );
+
+    return {
+      message:
+        'GSTIN verification & GSTR-track job accepted for background processing.',
+      jobId: job.id,
+      status: job.status,
+      checkStatusUrl: `/gst/status/${job.id}`,
+    };
+  }
+
+  /**
+   * POST /gst/verify-and-fetch-gst-2b
+   * Reads loanId / gst_no / pan from the uploaded-data table, verifies each
+   * GSTIN against the external GST API, and (when the verify response contains
+   * a status) runs GSTR-2B reconciliation for the given period, storing the
+   * results in a separate MongoDB collection.
+   *
+   * Runs in the background; poll GET /gst/status/:jobId for progress.
+   *
+   * query:
+   *   - year:                    required, 4-digit year (e.g. 2023)
+   *   - month:                   required, 1-12
+   *   - filing_preference:       optional, defaults to "monthly"
+   *   - reconciliation_criteria: optional, defaults to "strict"
+   * body (optional):
+   *   - tableName: source Postgres table (defaults to "gst_uploaded_file_data")
+   */
+  @Post('verify-and-fetch-gst-2b')
+  @HttpCode(HttpStatus.ACCEPTED)
+  async verifyAndFetchGst2b(
+    @Query('year') year: string,
+    @Query('month') month: string,
+    @Query('filing_preference') filingPreference?: string,
+    @Query('reconciliation_criteria') reconciliationCriteria?: string,
+    @Body('tableName') tableName?: string,
+  ) {
+    const job = await this.gstComplianceService.startVerifyAndFetch2b(
+      {
+        year: Number(year),
+        month: Number(month),
+        filingPreference: filingPreference ?? '',
+        reconciliationCriteria: reconciliationCriteria ?? '',
+      },
+      tableName,
+    );
+
+    return {
+      message:
+        'GSTIN verification & GSTR-2B reconciliation job accepted for background processing.',
       jobId: job.id,
       status: job.status,
       checkStatusUrl: `/gst/status/${job.id}`,
