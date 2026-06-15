@@ -130,7 +130,15 @@ export class GstComplianceService {
     try {
       await this.gstService.updateJobStatus(jobId, 'PROCESSING');
 
-      const rows = await this.fetchSourceRows(tableName);
+      const allRows = await this.fetchSourceRows(tableName);
+      const { pending: rows, skippedExisting } =
+        await this.partitionUnprocessedRows(allRows, this.complianceModel!);
+
+      await this.gstService.mergeJobMetadata(jobId, {
+        totalSourceRows: allRows.length,
+        skippedAlreadyExists: skippedExisting,
+      });
+
       const batches = this.chunk(rows, this.batchSize);
 
       await this.gstService.setJobTotalChunks(jobId, batches.length);
@@ -144,7 +152,10 @@ export class GstComplianceService {
           skippedInvalidGstin: 0,
           skippedNoStatus: 0,
           failed: 0,
-          note: 'No rows found in source table.',
+          note:
+            skippedExisting > 0
+              ? 'All rows already present in MongoDB; nothing to fetch.'
+              : 'No rows found in source table.',
         });
         return;
       }
@@ -344,7 +355,19 @@ export class GstComplianceService {
     try {
       await this.gstService.updateJobStatus(jobId, 'PROCESSING');
 
-      const rows = await this.fetchSourceRows(tableName);
+      const allRows = await this.fetchSourceRows(tableName);
+      const { pending: rows, skippedExisting } =
+        await this.partitionUnprocessedRows(
+          allRows,
+          this.gstrComplianceModel!,
+          { financialYear },
+        );
+
+      await this.gstService.mergeJobMetadata(jobId, {
+        totalSourceRows: allRows.length,
+        skippedAlreadyExists: skippedExisting,
+      });
+
       const batches = this.chunk(rows, this.batchSize);
 
       await this.gstService.setJobTotalChunks(jobId, batches.length);
@@ -358,7 +381,10 @@ export class GstComplianceService {
           skippedInvalidGstin: 0,
           skippedNoStatus: 0,
           failed: 0,
-          note: 'No rows found in source table.',
+          note:
+            skippedExisting > 0
+              ? 'All rows already present in MongoDB; nothing to fetch.'
+              : 'No rows found in source table.',
         });
         return;
       }
@@ -568,7 +594,19 @@ export class GstComplianceService {
     try {
       await this.gstService.updateJobStatus(jobId, 'PROCESSING');
 
-      const rows = await this.fetchSourceRows(tableName);
+      const allRows = await this.fetchSourceRows(tableName);
+      const { pending: rows, skippedExisting } =
+        await this.partitionUnprocessedRows(
+          allRows,
+          this.gstr2bComplianceModel!,
+          { year: params.year, month: params.month },
+        );
+
+      await this.gstService.mergeJobMetadata(jobId, {
+        totalSourceRows: allRows.length,
+        skippedAlreadyExists: skippedExisting,
+      });
+
       const batches = this.chunk(rows, this.batchSize);
 
       await this.gstService.setJobTotalChunks(jobId, batches.length);
@@ -582,7 +620,10 @@ export class GstComplianceService {
           skippedInvalidGstin: 0,
           skippedNoStatus: 0,
           failed: 0,
-          note: 'No rows found in source table.',
+          note:
+            skippedExisting > 0
+              ? 'All rows already present in MongoDB; nothing to fetch.'
+              : 'No rows found in source table.',
         });
         return;
       }
@@ -798,6 +839,48 @@ export class GstComplianceService {
     return this.dataSource.query(
       `SELECT loan_id, gst_no, pan FROM "${tableName}"`,
     );
+  }
+
+  /**
+   * Splits source rows into those that still need processing vs. those whose
+   * data is already stored in the target Mongo collection (same loanId + GSTIN
+   * and, where relevant, the same period). Already-stored rows are skipped to
+   * avoid re-fetching the same data from the external API.
+   *
+   * `extraMatch` carries the period filter that is constant for the whole job
+   * (e.g. { financialYear } or { year, month }); pass {} when none applies.
+   */
+  private async partitionUnprocessedRows(
+    rows: SourceRow[],
+    model: Model<any>,
+    extraMatch: Record<string, any> = {},
+  ): Promise<{ pending: SourceRow[]; skippedExisting: number }> {
+    const candidates = rows.filter((r) => (r.gst_no ?? '').trim());
+    if (candidates.length === 0) {
+      return { pending: rows, skippedExisting: 0 };
+    }
+
+    const loanIds = Array.from(new Set(candidates.map((r) => r.loan_id)));
+    const existing = (await model
+      .find({ loanId: { $in: loanIds }, ...extraMatch })
+      .select('loanId gstin')
+      .lean()
+      .exec()) as Array<{ loanId: string; gstin: string }>;
+
+    const existingSet = new Set<string>(
+      existing.map((d) => `${d.loanId}||${d.gstin}`),
+    );
+
+    let skippedExisting = 0;
+    const pending = rows.filter((r) => {
+      const gstin = (r.gst_no ?? '').trim().toUpperCase();
+      if (!gstin) return true; // row-level handles the no-GSTIN counting
+      const alreadyStored = existingSet.has(`${r.loan_id}||${gstin}`);
+      if (alreadyStored) skippedExisting++;
+      return !alreadyStored;
+    });
+
+    return { pending, skippedExisting };
   }
 
   private isValidGstin(gstin: string): boolean {

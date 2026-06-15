@@ -73,6 +73,17 @@ export class GstService {
     this.logger.log(`Job ${jobId} completed`);
   }
 
+  /** Merge a partial object into the job's existing metadata. */
+  async mergeJobMetadata(
+    jobId: string,
+    patch: Record<string, any>,
+  ): Promise<void> {
+    const job = await this.jobRepo.findOne({ where: { id: jobId } });
+    await this.jobRepo.update(jobId, {
+      metadata: { ...(job?.metadata ?? {}), ...patch },
+    });
+  }
+
   // ------------------ Task Helpers ------------------
 
   async createTask(
