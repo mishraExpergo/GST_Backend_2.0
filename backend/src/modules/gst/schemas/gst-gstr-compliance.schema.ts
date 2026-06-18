@@ -13,6 +13,12 @@ export class GstrComplianceRecord {
   @Prop({ index: true })
   loanId: string;
 
+  @Prop()
+  customerId: string;
+
+  @Prop()
+  entityType: string;
+
   @Prop({ index: true })
   gstin: string;
 

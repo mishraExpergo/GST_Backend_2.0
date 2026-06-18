@@ -5,8 +5,10 @@ import { GstComplianceService } from './services/gst-compliance.service';
 
 interface SourceRow {
   loan_id: string;
+  customer_id: string | null;
   gst_no: string | null;
   pan: string | null;
+  entity_type: 'PRIMARY' | 'CONSIDERED_ENTITY';
 }
 
 interface Gstr2bParams {

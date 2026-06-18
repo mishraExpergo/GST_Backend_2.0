@@ -15,14 +15,24 @@ import { ConfigService } from '@nestjs/config';
 import { Job } from '../../../entities/job.entity';
 import { GstService } from '../gst.service';
 import { GstApiService } from './gst-api.service';
+import { GstAggregationService } from './gst-aggregation.service';
 import { GstComplianceRecord } from '../schemas/gst-compliance.schema';
 import { GstrComplianceRecord } from '../schemas/gst-gstr-compliance.schema';
 import { Gstr2bComplianceRecord } from '../schemas/gst-2b-compliance.schema';
 
+type GstEntityType = 'PRIMARY' | 'CONSIDERED_ENTITY';
+
+/**
+ * A single GSTIN processing unit. Each uploaded data row can yield up to two
+ * of these: one for the primary entity GSTIN and one for the considered-entity
+ * GSTIN (when present).
+ */
 interface SourceRow {
   loan_id: string;
+  customer_id: string | null;
   gst_no: string | null;
   pan: string | null;
+  entity_type: GstEntityType;
 }
 
 interface Gstr2bParams {
@@ -54,6 +64,7 @@ export class GstComplianceService {
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly gstService: GstService,
     private readonly gstApiService: GstApiService,
+    private readonly gstAggregationService: GstAggregationService,
     private readonly config: ConfigService,
     @Optional()
     @InjectModel(GstComplianceRecord.name)
@@ -237,6 +248,7 @@ export class GstComplianceService {
         await this.gstService.incrementCompletedChunks(jobId);
       if (justCompleted) {
         await this.finalizeJob(jobId);
+        void this.maybeTriggerComplianceAggregation(jobId);
       }
     }
   }
@@ -281,6 +293,8 @@ export class GstComplianceService {
         {
           $set: {
             loanId: row.loan_id,
+            customerId: row.customer_id ?? null,
+            entityType: row.entity_type,
             gstin,
             pan: row.pan ?? verify?.data?.data?.pan ?? null,
             legalName: verify?.data?.data?.legalName ?? null,
@@ -519,6 +533,8 @@ export class GstComplianceService {
         {
           $set: {
             loanId: row.loan_id,
+            customerId: row.customer_id ?? null,
+            entityType: row.entity_type,
             gstin,
             pan: row.pan ?? verify?.data?.data?.pan ?? null,
             legalName: verify?.data?.data?.legalName ?? null,
@@ -758,6 +774,8 @@ export class GstComplianceService {
         {
           $set: {
             loanId: row.loan_id,
+            customerId: row.customer_id ?? null,
+            entityType: row.entity_type,
             gstin,
             pan: row.pan ?? verify?.data?.data?.pan ?? null,
             legalName: verify?.data?.data?.legalName ?? null,
@@ -814,9 +832,23 @@ export class GstComplianceService {
   }
 
   /**
-   * Best-effort update of the source row's processing status. The columns
-   * `status` / `last_data_pull_date` exist on the standard upload table; if a
-   * custom table lacks them we just log and continue.
+   * After a verify-and-fetch job completes, attempt per-customer aggregation
+   * into Postgres when all expected GSTINs are present in gst_compliance_data.
+   */
+  private async maybeTriggerComplianceAggregation(jobId: string): Promise<void> {
+    try {
+      await this.gstAggregationService.triggerAfterVerifyFetchJob(jobId);
+    } catch (err) {
+      this.logger.error(
+        `Compliance aggregation trigger failed for job ${jobId}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * Best-effort update of the source row's processing status keyed on
+   * `associated_loan_id`. The columns `status` / `last_data_pull_date` may not
+   * exist on every upload table; if they are missing we just log and continue.
    */
   private async markRowStatus(
     tableName: string,
@@ -825,7 +857,7 @@ export class GstComplianceService {
   ): Promise<void> {
     try {
       await this.dataSource.query(
-        `UPDATE "${tableName}" SET status = $1, last_data_pull_date = NOW() WHERE loan_id = $2`,
+        `UPDATE "${tableName}" SET status = $1, last_data_pull_date = NOW() WHERE associated_loan_id = $2`,
         [status, loanId],
       );
     } catch (err) {
@@ -835,10 +867,53 @@ export class GstComplianceService {
     }
   }
 
+  /**
+   * Reads the uploaded data and expands each DB row into individual GSTIN
+   * processing units. Both `primary_gst_no` and `considered_entity_gst_no`
+   * are pulled (when present), each with its corresponding PAN, so the verify
+   * flows fetch data for both entities.
+   */
   private async fetchSourceRows(tableName: string): Promise<SourceRow[]> {
-    return this.dataSource.query(
-      `SELECT loan_id, gst_no, pan FROM "${tableName}"`,
+    const dbRows: Array<{
+      customer_id: string | null;
+      associated_loan_id: string | null;
+      primary_pan: string | null;
+      primary_gst_no: string | null;
+      considered_entity_pan: string | null;
+      considered_entity_gst_no: string | null;
+    }> = await this.dataSource.query(
+      `SELECT customer_id, associated_loan_id, primary_pan, primary_gst_no,
+              considered_entity_pan, considered_entity_gst_no
+         FROM "${tableName}"`,
     );
+
+    const rows: SourceRow[] = [];
+    for (const r of dbRows) {
+      const loanId = (r.associated_loan_id ?? '').trim();
+      const customerId = r.customer_id ?? null;
+
+      if ((r.primary_gst_no ?? '').trim()) {
+        rows.push({
+          loan_id: loanId,
+          customer_id: customerId,
+          gst_no: r.primary_gst_no,
+          pan: r.primary_pan ?? null,
+          entity_type: 'PRIMARY',
+        });
+      }
+
+      if ((r.considered_entity_gst_no ?? '').trim()) {
+        rows.push({
+          loan_id: loanId,
+          customer_id: customerId,
+          gst_no: r.considered_entity_gst_no,
+          pan: r.considered_entity_pan ?? null,
+          entity_type: 'CONSIDERED_ENTITY',
+        });
+      }
+    }
+
+    return rows;
   }
 
   /**
