@@ -18,6 +18,8 @@ import { GstApiService } from './gst-api.service';
 import { GstComplianceRecord } from '../schemas/gst-compliance.schema';
 import { GstrComplianceRecord } from '../schemas/gst-gstr-compliance.schema';
 import { Gstr2bComplianceRecord } from '../schemas/gst-2b-compliance.schema';
+import { Gstr3bComplianceRecord } from '../schemas/gst-3b-compliance.schema';
+import { WhitebooksApiService } from './whitebooks-api.service';
 
 interface SourceRow {
   loan_id: string;
@@ -55,6 +57,7 @@ export class GstComplianceService {
     private readonly gstService: GstService,
     private readonly gstApiService: GstApiService,
     private readonly config: ConfigService,
+    private readonly whitebooksApiService: WhitebooksApiService,
     @Optional()
     @InjectModel(GstComplianceRecord.name)
     private readonly complianceModel?: Model<GstComplianceRecord>,
@@ -64,6 +67,9 @@ export class GstComplianceService {
     @Optional()
     @InjectModel(Gstr2bComplianceRecord.name)
     private readonly gstr2bComplianceModel?: Model<Gstr2bComplianceRecord>,
+    @Optional()
+    @InjectModel(Gstr3bComplianceRecord.name)
+    private readonly gstr3bComplianceModel?: Model<Gstr3bComplianceRecord>,
     @Optional()
     @Inject('VERIFY_PARENT_SERVICE')
     private readonly verifyParentClient?: ClientProxy,
@@ -82,6 +88,12 @@ export class GstComplianceService {
     @Optional()
     @Inject('VERIFY_2B_CHUNK_SERVICE')
     private readonly verify2bChunkClient?: ClientProxy,
+    @Optional()
+    @Inject('VERIFY_3B_PARENT_SERVICE')
+    private readonly verify3bParentClient?: ClientProxy,
+    @Optional()
+    @Inject('VERIFY_3B_CHUNK_SERVICE')
+    private readonly verify3bChunkClient?: ClientProxy,
   ) {}
 
   private get batchSize(): number {
@@ -785,6 +797,237 @@ export class GstComplianceService {
     }
   }
 
+  // ================ GSTR-3B verify-and-fetch-retsum flow ================
+
+  /**
+   * Entry point for the GSTR-3B flow: verifies each GSTIN then fetches GSTR-3B
+   * return summary for the given period, storing results in a separate Mongo
+   * collection. Returns the job immediately; poll GET /gst/status/:jobId.
+   */
+  async startVerifyAndFetch3b(
+    retperiod: string,
+    rawTableName?: string,
+  ): Promise<Job> {
+    if (!this.gstr3bComplianceModel) {
+      throw new ServiceUnavailableException(
+        'MongoDB is not enabled. Set ENABLE_MONGO=true and configure MONGO_URI to store GSTR-3B compliance data.',
+      );
+    }
+
+    const period = this.sanitizeRetperiod(retperiod);
+    const tableName = this.sanitizeTableName(rawTableName);
+
+    const job = await this.gstService.createJob('API', {
+      operation: 'GSTIN_VERIFY_AND_FETCH_GSTR_3B',
+      sourceTable: tableName,
+      retperiod: period,
+    });
+
+    if (this.verify3bParentClient) {
+      this.verify3bParentClient.emit('verify_3b_parent', {
+        jobId: job.id,
+        tableName,
+        retperiod: period,
+      });
+    } else {
+      void this.processVerify3bParent(job.id, tableName, period);
+    }
+
+    return job;
+  }
+
+  async processVerify3bParent(
+    jobId: string,
+    tableName: string,
+    retperiod: string,
+  ): Promise<void> {
+    try {
+      await this.gstService.updateJobStatus(jobId, 'PROCESSING');
+
+      const allRows = await this.fetchSourceRows(tableName);
+      const { pending: rows, skippedExisting } =
+        await this.partitionUnprocessedRows(
+          allRows,
+          this.gstr3bComplianceModel!,
+          { retperiod },
+        );
+
+      await this.gstService.mergeJobMetadata(jobId, {
+        totalSourceRows: allRows.length,
+        skippedAlreadyExists: skippedExisting,
+      });
+
+      const batches = this.chunk(rows, this.batchSize);
+
+      await this.gstService.setJobTotalChunks(jobId, batches.length);
+
+      if (batches.length === 0) {
+        await this.gstService.finishJob(jobId, {
+          totalRows: 0,
+          verified: 0,
+          stored: 0,
+          skippedNoGstin: 0,
+          skippedInvalidGstin: 0,
+          skippedNoStatus: 0,
+          failed: 0,
+          note:
+            skippedExisting > 0
+              ? 'All rows already present in MongoDB; nothing to fetch.'
+              : 'No rows found in source table.',
+        });
+        return;
+      }
+
+      for (let i = 0; i < batches.length; i++) {
+        const task = await this.gstService.createTask(jobId, {
+          tableName,
+          retperiod,
+          batchIndex: i,
+          totalBatches: batches.length,
+          rows: batches[i],
+        });
+
+        if (this.verify3bChunkClient) {
+          this.verify3bChunkClient.emit('verify_3b_chunk', {
+            taskId: task.id,
+            jobId,
+            tableName,
+            retperiod,
+            rows: batches[i],
+          });
+        } else {
+          await this.processVerify3bChunk(
+            task.id,
+            jobId,
+            tableName,
+            retperiod,
+            batches[i],
+          );
+        }
+      }
+
+      this.logger.log(
+        `Dispatched ${batches.length} GSTR-3B verify batches for Job ${jobId}`,
+      );
+    } catch (err) {
+      await this.gstService.updateJobStatus(
+        jobId,
+        'FAILED',
+        (err as Error).message,
+      );
+      this.logger.error(
+        `verify-3b-parent job ${jobId} failed: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  async processVerify3bChunk(
+    taskId: string,
+    jobId: string,
+    tableName: string,
+    retperiod: string,
+    rows: SourceRow[],
+  ): Promise<void> {
+    await this.gstService.markTask(taskId, 'PROCESSING', { attempts: 1 });
+
+    const result: BatchResult = {
+      totalRows: rows.length,
+      verified: 0,
+      stored: 0,
+      skippedNoGstin: 0,
+      skippedInvalidGstin: 0,
+      skippedNoStatus: 0,
+      failed: 0,
+    };
+
+    try {
+      await this.runWithConcurrency(rows, this.concurrency, async (row) => {
+        await this.processGstr3bRow(row, tableName, retperiod, result);
+      });
+
+      await this.gstService.markTask(taskId, 'COMPLETED', { result });
+    } catch (err) {
+      await this.gstService.markTask(taskId, 'FAILED', {
+        result,
+        errorMessage: (err as Error).message,
+      });
+      this.logger.error(
+        `verify-3b-chunk task ${taskId} failed: ${(err as Error).message}`,
+      );
+    } finally {
+      const { justCompleted } =
+        await this.gstService.incrementCompletedChunks(jobId);
+      if (justCompleted) {
+        await this.finalizeJob(jobId);
+      }
+    }
+  }
+
+  private async processGstr3bRow(
+    row: SourceRow,
+    tableName: string,
+    retperiod: string,
+    result: BatchResult,
+  ): Promise<void> {
+    const gstin = (row.gst_no ?? '').trim().toUpperCase();
+    if (!gstin) {
+      result.skippedNoGstin++;
+      return;
+    }
+    if (!this.isValidGstin(gstin)) {
+      result.skippedInvalidGstin++;
+      await this.markRowStatus(tableName, row.loan_id, 'INVALID_GSTIN');
+      this.logger.warn(
+        `Skipping invalid GSTIN for loanId=${row.loan_id}: ${gstin}`,
+      );
+      return;
+    }
+
+    try {
+      const verify = await this.gstApiService.verifyGstin(gstin);
+      const status = verify?.data?.data?.status;
+
+      if (status === undefined || status === null || status === '') {
+        result.skippedNoStatus++;
+        await this.markRowStatus(tableName, row.loan_id, 'GST_3B_NO_STATUS');
+        return;
+      }
+      result.verified++;
+
+      const retsum = await this.whitebooksApiService!.getGstr3bRetsum(
+        gstin,
+        retperiod,
+      );
+
+      await this.gstr3bComplianceModel!.updateOne(
+        { loanId: row.loan_id, gstin, retperiod },
+        {
+          $set: {
+            loanId: row.loan_id,
+            gstin,
+            pan: row.pan ?? verify?.data?.data?.pan ?? null,
+            legalName: verify?.data?.data?.legalName ?? null,
+            status,
+            retperiod,
+            sourceTable: tableName,
+            verifyResponse: verify,
+            retsumResponse: retsum,
+          },
+        },
+        { upsert: true },
+      );
+      result.stored++;
+
+      await this.markRowStatus(tableName, row.loan_id, 'GST_3B_FETCHED');
+    } catch (err) {
+      result.failed++;
+      this.logger.error(
+        `Failed verify/retsum-3b for loanId=${row.loan_id} gstin=${gstin}: ${(err as Error).message}`,
+      );
+      await this.markRowStatus(tableName, row.loan_id, 'GST_3B_FAILED');
+    }
+  }
+
   /** Aggregate per-batch results into a final job summary. */
   private async finalizeJob(jobId: string): Promise<void> {
     const tasks = await this.gstService.getJobTasks(jobId);
@@ -960,5 +1203,21 @@ export class GstComplianceService {
       (params?.reconciliationCriteria ?? '').trim() || 'strict';
 
     return { year, month, filingPreference, reconciliationCriteria };
+  }
+
+  /** Validates return period in MMYYYY format (e.g. 112022 for Nov 2022). */
+  private sanitizeRetperiod(retperiod?: string): string {
+    const period = (retperiod ?? '').trim();
+    if (!period) {
+      throw new BadRequestException(
+        '"retperiod" query parameter is required (MMYYYY, e.g. 112022).',
+      );
+    }
+    if (!/^(0[1-9]|1[0-2])\d{4}$/.test(period)) {
+      throw new BadRequestException(
+        `Invalid retperiod "${period}". Expected MMYYYY (e.g. 112022 for Nov 2022).`,
+      );
+    }
+    return period;
   }
 }

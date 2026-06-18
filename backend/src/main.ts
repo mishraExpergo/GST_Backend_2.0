@@ -80,6 +80,8 @@ async function bootstrap() {
     logger.log(`  - ${QUEUES.VERIFY_GSTR_CHUNK}   (verify_gstr_chunk)`);
     logger.log(`  - ${QUEUES.VERIFY_2B_PARENT}  (verify_2b_parent)`);
     logger.log(`  - ${QUEUES.VERIFY_2B_CHUNK}   (verify_2b_chunk)`);
+    logger.log(`  - ${QUEUES.VERIFY_3B_PARENT}  (verify_3b_parent)`);
+    logger.log(`  - ${QUEUES.VERIFY_3B_CHUNK}   (verify_3b_chunk)`);
     logger.log('Connecting microservice consumers...');
 
     app.connectMicroservice({
@@ -147,6 +149,26 @@ async function bootstrap() {
       options: {
         urls: [rmqUrl],
         queue: QUEUES.VERIFY_2B_CHUNK,
+        queueOptions: { durable: true },
+        noAck: false,
+      },
+    });
+
+    app.connectMicroservice({
+      transport: Transport.RMQ,
+      options: {
+        urls: [rmqUrl],
+        queue: QUEUES.VERIFY_3B_PARENT,
+        queueOptions: { durable: true },
+        noAck: false,
+      },
+    });
+
+    app.connectMicroservice({
+      transport: Transport.RMQ,
+      options: {
+        urls: [rmqUrl],
+        queue: QUEUES.VERIFY_3B_CHUNK,
         queueOptions: { durable: true },
         noAck: false,
       },

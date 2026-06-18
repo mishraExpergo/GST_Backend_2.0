@@ -25,6 +25,11 @@ import {
   Gstr2bComplianceRecord,
   Gstr2bComplianceSchema,
 } from './schemas/gst-2b-compliance.schema';
+import {
+  Gstr3bComplianceRecord,
+  Gstr3bComplianceSchema,
+} from './schemas/gst-3b-compliance.schema';
+import { WhitebooksApiService } from './services/whitebooks-api.service';
 
 const enableRabbitMQ = process.env.ENABLE_RABBITMQ === 'true';
 const enableMongo = process.env.ENABLE_MONGO === 'true';
@@ -43,6 +48,10 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
             {
               name: Gstr2bComplianceRecord.name,
               schema: Gstr2bComplianceSchema,
+            },
+            {
+              name: Gstr3bComplianceRecord.name,
+              schema: Gstr3bComplianceSchema,
             },
           ]),
         ]
@@ -105,6 +114,20 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
               useFactory: (configService: ConfigService) =>
                 getRabbitMQClientConfig(configService, QUEUES.VERIFY_2B_CHUNK),
             },
+            {
+              name: 'VERIFY_3B_PARENT_SERVICE',
+              imports: [ConfigModule],
+              inject: [ConfigService],
+              useFactory: (configService: ConfigService) =>
+                getRabbitMQClientConfig(configService, QUEUES.VERIFY_3B_PARENT),
+            },
+            {
+              name: 'VERIFY_3B_CHUNK_SERVICE',
+              imports: [ConfigModule],
+              inject: [ConfigService],
+              useFactory: (configService: ConfigService) =>
+                getRabbitMQClientConfig(configService, QUEUES.VERIFY_3B_CHUNK),
+            },
           ]),
         ]
       : []),
@@ -115,6 +138,7 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
     FileStorageService,
     GstAuthService,
     GstApiService,
+    WhitebooksApiService,
     GstComplianceService,
   ],
   exports: [GstService],

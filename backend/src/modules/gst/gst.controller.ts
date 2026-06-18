@@ -213,6 +213,40 @@ export class GstController {
   }
 
   /**
+   * POST /gst/verify-and-fetch-gst-3b
+   * Reads loanId / gst_no / pan from the uploaded-data table, verifies each
+   * GSTIN against the external GST API, and (when the verify response contains
+   * a status) fetches GSTR-3B return summary from Whitebooks for the given
+   * return period, storing the results in a separate MongoDB collection.
+   *
+   * Runs in the background; poll GET /gst/status/:jobId for progress.
+   *
+   * query:
+   *   - retperiod: required, MMYYYY format (e.g. 112022 for Nov 2022)
+   * body (optional):
+   *   - tableName: source Postgres table (defaults to "gst_uploaded_file_data")
+   */
+  @Post('verify-and-fetch-gst-3b')
+  @HttpCode(HttpStatus.ACCEPTED)
+  async verifyAndFetchGst3b(
+    @Query('retperiod') retperiod: string,
+    @Body('tableName') tableName?: string,
+  ) {
+    const job = await this.gstComplianceService.startVerifyAndFetch3b(
+      retperiod,
+      tableName,
+    );
+
+    return {
+      message:
+        'GSTIN verification & GSTR-3B retsum job accepted for background processing.',
+      jobId: job.id,
+      status: job.status,
+      checkStatusUrl: `/gst/status/${job.id}`,
+    };
+  }
+
+  /**
    * GET /gst/status/:jobId
    * Return real-time job status and page ingestion statistics.
    */

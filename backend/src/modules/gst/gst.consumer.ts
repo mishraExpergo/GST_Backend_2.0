@@ -235,4 +235,68 @@ export class GstConsumer {
       channel.nack(originalMsg, false, false);
     }
   }
+
+  /**
+   * Consumes GSTIN verify-and-fetch-GSTR-3B Parent/Orchestrator Tasks
+   */
+  @EventPattern('verify_3b_parent')
+  async handleVerify3bParent(
+    @Payload()
+    data: { jobId: string; tableName: string; retperiod: string },
+    @Ctx() context: RmqContext,
+  ) {
+    const channel = context.getChannelRef();
+    const originalMsg = context.getMessage();
+
+    this.logger.log(`Received verify_3b_parent event for Job: ${data.jobId}`);
+    try {
+      await this.gstComplianceService.processVerify3bParent(
+        data.jobId,
+        data.tableName,
+        data.retperiod,
+      );
+      channel.ack(originalMsg);
+      this.logger.log(`Successfully orchestrated GSTR-3B verify parent Job: ${data.jobId}`);
+    } catch (err) {
+      this.logger.error(`Error orchestrating GSTR-3B verify parent Job ${data.jobId}: ${(err as Error).message}`);
+      channel.nack(originalMsg, false, false);
+    }
+  }
+
+  /**
+   * Consumes GSTIN verify-and-fetch-GSTR-3B Batch/Chunk Tasks
+   */
+  @EventPattern('verify_3b_chunk')
+  async handleVerify3bChunk(
+    @Payload()
+    data: {
+      taskId: string;
+      jobId: string;
+      tableName: string;
+      retperiod: string;
+      rows: SourceRow[];
+    },
+    @Ctx() context: RmqContext,
+  ) {
+    const channel = context.getChannelRef();
+    const originalMsg = context.getMessage();
+
+    this.logger.log(
+      `Received verify_3b_chunk event for Task: ${data.taskId} (Job: ${data.jobId})`,
+    );
+    try {
+      await this.gstComplianceService.processVerify3bChunk(
+        data.taskId,
+        data.jobId,
+        data.tableName,
+        data.retperiod,
+        data.rows,
+      );
+      channel.ack(originalMsg);
+      this.logger.log(`Successfully finished GSTR-3B verify chunk: ${data.taskId}`);
+    } catch (err) {
+      this.logger.error(`Error processing GSTR-3B verify chunk ${data.taskId}: ${(err as Error).message}`);
+      channel.nack(originalMsg, false, false);
+    }
+  }
 }

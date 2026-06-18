@@ -11,6 +11,8 @@ export const QUEUES = {
   VERIFY_GSTR_CHUNK: 'gst_verify_gstr_chunk_queue',
   VERIFY_2B_PARENT: 'gst_verify_2b_parent_queue',
   VERIFY_2B_CHUNK: 'gst_verify_2b_chunk_queue',
+  VERIFY_3B_PARENT: 'gst_verify_3b_parent_queue',
+  VERIFY_3B_CHUNK: 'gst_verify_3b_chunk_queue',
 } as const;
 
 export const ALL_QUEUES = Object.values(QUEUES);
