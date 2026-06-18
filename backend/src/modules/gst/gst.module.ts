@@ -7,12 +7,15 @@ import { GstController } from './gst.controller';
 import { GstService } from './gst.service';
 import { Job } from '../../entities/job.entity';
 import { JobTask } from '../../entities/job-task.entity';
+import { PrimaryGstAggregation } from '../../entities/primary-gst-aggregation.entity';
+import { SecondaryGstAggregation } from '../../entities/secondary-gst-aggregation.entity';
 import { FileStorageService } from '../shared/services/file-storage.service';
 import { getRabbitMQClientConfig, QUEUES } from '../../config/rabbitmq.config';
 import { GstConsumer } from './gst.consumer';
 import { GstAuthService } from './services/gst-auth.service';
 import { GstApiService } from './services/gst-api.service';
 import { GstComplianceService } from './services/gst-compliance.service';
+import { GstAggregationService } from './services/gst-aggregation.service';
 import {
   GstComplianceRecord,
   GstComplianceSchema,
@@ -36,7 +39,12 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Job, JobTask]),
+    TypeOrmModule.forFeature([
+      Job,
+      JobTask,
+      PrimaryGstAggregation,
+      SecondaryGstAggregation,
+    ]),
     ...(enableMongo
       ? [
           MongooseModule.forFeature([
@@ -140,6 +148,7 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
     GstApiService,
     WhitebooksApiService,
     GstComplianceService,
+    GstAggregationService,
   ],
   exports: [GstService],
 })

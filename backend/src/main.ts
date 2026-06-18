@@ -4,6 +4,7 @@ import { NestFactory } from '@nestjs/core';
 import { Transport } from '@nestjs/microservices';
 import { networkInterfaces } from 'os';
 import { AppModule } from './app.module';
+import { HttpLoggingInterceptor } from './common/interceptors/http-logging.interceptor';
 
 // On some Windows/VPN setups Node's DNS resolver (c-ares) fails SRV lookups
 // with `querySrv ECONNREFUSED`, which breaks `mongodb+srv://` (Atlas) URIs even
@@ -65,6 +66,7 @@ async function bootstrap() {
   const enableRabbitMQ = await resolveRabbitMQMode(logger);
 
   const app = await NestFactory.create(AppModule);
+  app.useGlobalInterceptors(new HttpLoggingInterceptor());
 
   if (enableRabbitMQ) {
     const rmqUrl = process.env.RABBITMQ_URL || 'amqp://localhost:5672';
