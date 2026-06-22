@@ -52,51 +52,8 @@ export class GstApiService {
   /** POST /gst/compliance/public/gstin/search */
   async searchGstin(gstin: string): Promise<Record<string, any>> {
     const url = `${this.baseUrl}/gst/compliance/public/gstin/search`;
+    
     return this.authedPost<Record<string, any>>(url, { gstin });
-  }
-
-  /**
-   * POST /gst/compliance/public/gstrs/track
-   * Tracks GSTR filing status for a GSTIN in a given financial year.
-   * `financialYear` comes from the caller (frontend); `gstr` is left as the
-   * API default ("null") to return all return types.
-   */
-  async trackGstr(
-    gstin: string,
-    financialYear: string,
-  ): Promise<Record<string, any>> {
-    const params = new URLSearchParams({
-      gstr: 'null',
-      financial_year: financialYear,
-    });
-    const url = `${this.baseUrl}/gst/compliance/public/gstrs/track?${params.toString()}`;
-    return this.authedPost<Record<string, any>>(url, { gstin });
-  }
-
-  /**
-   * POST /gst/analytics/gstr-2b-reconciliation
-   * Runs GSTR-2B reconciliation for a GSTIN. All request fields other than the
-   * GSTIN (year, month, filing preference, reconciliation criteria) are
-   * supplied by the caller (frontend).
-   */
-  async reconcileGstr2b(
-    gstin: string,
-    params: {
-      year: number;
-      month: number;
-      filingPreference: string;
-      reconciliationCriteria: string;
-    },
-  ): Promise<Record<string, any>> {
-    const url = `${this.baseUrl}/gst/analytics/gstr-2b-reconciliation`;
-    return this.authedPost<Record<string, any>>(url, {
-      '@entity': 'in.co.sandbox.gst.analytics.gstr-2b_reconciliation.request',
-      gstin,
-      year: params.year,
-      month: params.month,
-      filing_preference: params.filingPreference,
-      reconciliation_criteria: params.reconciliationCriteria,
-    });
   }
 
   /**
@@ -161,6 +118,65 @@ export class GstApiService {
     }
   }
 
+  /**
+   * GET with the access token. Handles:
+   *  - 401/403: re-authenticate once and retry.
+   *  - 429 / 5xx / network errors: retry with exponential backoff + jitter.
+   */
+  private async authedGet<T>(url: string): Promise<T> {
+    const maxRetries = Number(this.config.get('GST_API_MAX_RETRIES', '3'));
+    const baseDelay = Number(this.config.get('GST_API_RETRY_BASE_MS', '500'));
+
+    let attempt = 0;
+    let reauthed = false;
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const token = await this.auth.getAccessToken();
+
+      let res: AxiosResponse | undefined;
+      try {
+        res = await this.rawGet(url, token);
+      } catch (err) {
+        // Network/timeout error: retry if we have attempts left.
+        if (attempt < maxRetries) {
+          attempt++;
+          await this.delay(this.backoff(baseDelay, attempt));
+          continue;
+        }
+        throw new Error(
+          `GST API ${url} request failed: ${(err as Error).message}`,
+        );
+      }
+
+      if ((res.status === 401 || res.status === 403) && !reauthed) {
+        this.logger.warn(
+          `GST API ${url} returned ${res.status}; refreshing access token and retrying.`,
+        );
+        reauthed = true;
+        this.auth.invalidate();
+        await this.auth.getAccessToken(true);
+        continue;
+      }
+
+      if (this.isTransient(res.status) && attempt < maxRetries) {
+        attempt++;
+        this.logger.warn(
+          `GST API ${url} returned ${res.status}; retry ${attempt}/${maxRetries}.`,
+        );
+        await this.delay(this.backoff(baseDelay, attempt));
+        continue;
+      }
+
+      if (res.status < 200 || res.status >= 300) {
+        const payload = JSON.stringify(res.data ?? {}).slice(0, 300);
+        throw new Error(`GST API ${url} responded ${res.status}: ${payload}`);
+      }
+
+      return res.data as T;
+    }
+  }
+
   private isTransient(status: number): boolean {
     return status === 429 || status >= 500;
   }
@@ -183,6 +199,20 @@ export class GstApiService {
     return axios.post(url, body, {
       headers: {
         'content-type': 'application/json',
+        authorization: token,
+        'x-api-key': this.config.get<string>('GST_API_KEY_LIVE', ''),
+        'x-api-version': this.config.get<string>('GST_API_VERSION', ''),
+        'x-accept-cache': this.config.get<string>('GST_API_ACCEPT_CACHE', 'true'),
+      },
+      timeout: this.timeoutMs,
+      // Let us inspect 4xx/5xx ourselves (needed for the 401 retry flow).
+      validateStatus: () => true,
+    });
+  }
+
+  private rawGet(url: string, token: string): Promise<AxiosResponse> {
+    return axios.get(url, {
+      headers: {
         authorization: token,
         'x-api-key': this.config.get<string>('GST_API_KEY_LIVE', ''),
         'x-api-version': this.config.get<string>('GST_API_VERSION', ''),

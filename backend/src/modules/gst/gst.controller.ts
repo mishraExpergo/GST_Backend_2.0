@@ -15,8 +15,11 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ClientProxy } from '@nestjs/microservices';
+import { randomUUID } from 'crypto';
 import { GstService } from './gst.service';
 import { GstComplianceService } from './services/gst-compliance.service';
+import { GstTaxpayerAuthService } from './services/gst-taxpayer-auth.service';
+import { GstTaxpayerReturnsService } from './services/gst-taxpayer-returns.service';
 import { FileStorageService } from '../shared/services/file-storage.service';
 
 @Controller('gst')
@@ -25,6 +28,8 @@ export class GstController {
     private readonly gstService: GstService,
     private readonly fileStorageService: FileStorageService,
     private readonly gstComplianceService: GstComplianceService,
+    private readonly gstTaxpayerAuthService: GstTaxpayerAuthService,
+    private readonly gstTaxpayerReturnsService: GstTaxpayerReturnsService,
     @Optional() @Inject('EXCEL_SERVICE') private readonly excelClient?: ClientProxy,
   ) {}
 
@@ -134,116 +139,133 @@ export class GstController {
   }
 
   /**
-   * POST /gst/verify-and-fetch-gst-r1
-   * Reads loanId / gst_no / pan from the uploaded-data table, verifies each
-   * GSTIN against the external GST API, and (when the verify response contains
-   * a status) tracks GSTR filing status for the given financial year, storing
-   * the results in a separate MongoDB collection.
-   *
-   * Runs in the background; poll GET /gst/status/:jobId for progress.
-   *
-   * query:
-   *   - financial_year: required, format "YYYY-YY" (e.g. 2023-24)
-   * body (optional):
-   *   - tableName: source Postgres table (defaults to "gst_uploaded_file_data")
+   * POST /gst/taxpayer/otp/generate
+   * Triggers OTP generation on Sandbox for a taxpayer session.
    */
-  @Post('verify-and-fetch-gst-r1')
-  @HttpCode(HttpStatus.ACCEPTED)
-  async verifyAndFetchGstR1(
-    @Query('financial_year') financialYear: string,
-    @Body('tableName') tableName?: string,
+  @Post('taxpayer/otp/generate')
+  async generateTaxpayerOtp(
+    @Body('username') username: string,
+    @Body('gstin') gstin: string,
   ) {
-    const job = await this.gstComplianceService.startVerifyAndFetchGstr(
-      financialYear,
-      tableName,
-    );
-
-    return {
-      message:
-        'GSTIN verification & GSTR-track job accepted for background processing.',
-      jobId: job.id,
-      status: job.status,
-      checkStatusUrl: `/gst/status/${job.id}`,
-    };
+    const data = await this.gstTaxpayerAuthService.generateOtp({ username, gstin });
+    return this.successResponse('taxpayer-auth.generate-otp', data);
   }
 
   /**
-   * POST /gst/verify-and-fetch-gst-2b
-   * Reads loanId / gst_no / pan from the uploaded-data table, verifies each
-   * GSTIN against the external GST API, and (when the verify response contains
-   * a status) runs GSTR-2B reconciliation for the given period, storing the
-   * results in a separate MongoDB collection.
-   *
-   * Runs in the background; poll GET /gst/status/:jobId for progress.
-   *
-   * query:
-   *   - year:                    required, 4-digit year (e.g. 2023)
-   *   - month:                   required, 1-12
-   *   - filing_preference:       optional, defaults to "monthly"
-   *   - reconciliation_criteria: optional, defaults to "strict"
-   * body (optional):
-   *   - tableName: source Postgres table (defaults to "gst_uploaded_file_data")
+   * POST /gst/taxpayer/otp/submit
+   * Stores OTP in backend for up to 10 minutes before verify call.
    */
-  @Post('verify-and-fetch-gst-2b')
-  @HttpCode(HttpStatus.ACCEPTED)
-  async verifyAndFetchGst2b(
-    @Query('year') year: string,
-    @Query('month') month: string,
-    @Query('filing_preference') filingPreference?: string,
-    @Query('reconciliation_criteria') reconciliationCriteria?: string,
-    @Body('tableName') tableName?: string,
+  @Post('taxpayer/otp/submit')
+  async submitTaxpayerOtp(
+    @Body('username') username: string,
+    @Body('gstin') gstin: string,
+    @Body('otp') otp: string,
   ) {
-    const job = await this.gstComplianceService.startVerifyAndFetch2b(
-      {
-        year: Number(year),
-        month: Number(month),
-        filingPreference: filingPreference ?? '',
-        reconciliationCriteria: reconciliationCriteria ?? '',
-      },
-      tableName,
-    );
-
-    return {
-      message:
-        'GSTIN verification & GSTR-2B reconciliation job accepted for background processing.',
-      jobId: job.id,
-      status: job.status,
-      checkStatusUrl: `/gst/status/${job.id}`,
-    };
+    const data = await this.gstTaxpayerAuthService.submitOtp({
+      username,
+      gstin,
+      otp,
+    });
+    return this.successResponse('taxpayer-auth.submit-otp', data);
   }
 
   /**
-   * POST /gst/verify-and-fetch-gst-3b
-   * Reads loanId / gst_no / pan from the uploaded-data table, verifies each
-   * GSTIN against the external GST API, and (when the verify response contains
-   * a status) fetches GSTR-3B return summary from Whitebooks for the given
-   * return period, storing the results in a separate MongoDB collection.
-   *
-   * Runs in the background; poll GET /gst/status/:jobId for progress.
-   *
-   * query:
-   *   - retperiod: required, MMYYYY format (e.g. 112022 for Nov 2022)
-   * body (optional):
-   *   - tableName: source Postgres table (defaults to "gst_uploaded_file_data")
+   * POST /gst/taxpayer/otp/verify
+   * Verifies submitted OTP and saves taxpayer access token.
    */
-  @Post('verify-and-fetch-gst-3b')
-  @HttpCode(HttpStatus.ACCEPTED)
-  async verifyAndFetchGst3b(
-    @Query('retperiod') retperiod: string,
-    @Body('tableName') tableName?: string,
+  @Post('taxpayer/otp/verify')
+  async verifyTaxpayerOtp(
+    @Body('username') username: string,
+    @Body('gstin') gstin: string,
   ) {
-    const job = await this.gstComplianceService.startVerifyAndFetch3b(
-      retperiod,
-      tableName,
-    );
+    const data = await this.gstTaxpayerAuthService.verifyOtp({ username, gstin });
+    return this.successResponse('taxpayer-auth.verify-otp', data);
+  }
 
-    return {
-      message:
-        'GSTIN verification & GSTR-3B retsum job accepted for background processing.',
-      jobId: job.id,
-      status: job.status,
-      checkStatusUrl: `/gst/status/${job.id}`,
-    };
+  /**
+   * POST /gst/taxpayer/session/refresh
+   * Refreshes taxpayer access token (manual endpoint).
+   */
+  @Post('taxpayer/session/refresh')
+  async refreshTaxpayerSession(
+    @Body('username') username: string,
+    @Body('gstin') gstin: string,
+  ) {
+    const data = await this.gstTaxpayerAuthService.refreshAccessToken({
+      username,
+      gstin,
+    });
+    return this.successResponse('taxpayer-auth.refresh-session', data);
+  }
+
+  /**
+   * GET /gst/taxpayer/session/status?username=...&gstin=...
+   * Returns current taxpayer OTP/session status.
+   */
+  @Get('taxpayer/session/status')
+  async getTaxpayerSessionStatus(
+    @Query('username') username: string,
+    @Query('gstin') gstin: string,
+  ) {
+    const data = await this.gstTaxpayerAuthService.getSessionStatus({
+      username,
+      gstin,
+    });
+    return this.successResponse('taxpayer-auth.session-status', data);
+  }
+
+  /**
+   * GET /gst/taxpayer/gstr-1/:year/:month?username=...&gstin=...
+   */
+  @Get('taxpayer/gstr-1/:year/:month')
+  async fetchTaxpayerGstr1(
+    @Param('year') year: string,
+    @Param('month') month: string,
+    @Query('username') username: string,
+    @Query('gstin') gstin: string,
+  ) {
+    const data = await this.gstTaxpayerReturnsService.fetchGstr1(
+      { username, gstin },
+      Number(year),
+      Number(month),
+    );
+    return this.successResponse('taxpayer-returns.gstr-1', data);
+  }
+
+  /**
+   * GET /gst/taxpayer/gstr-2b/:year/:month?username=...&gstin=...
+   */
+  @Get('taxpayer/gstr-2b/:year/:month')
+  async fetchTaxpayerGstr2b(
+    @Param('year') year: string,
+    @Param('month') month: string,
+    @Query('username') username: string,
+    @Query('gstin') gstin: string,
+  ) {
+    const data = await this.gstTaxpayerReturnsService.fetchGstr2b(
+      { username, gstin },
+      Number(year),
+      Number(month),
+    );
+    return this.successResponse('taxpayer-returns.gstr-2b', data);
+  }
+
+  /**
+   * GET /gst/taxpayer/gstr-3b/:year/:month?username=...&gstin=...
+   */
+  @Get('taxpayer/gstr-3b/:year/:month')
+  async fetchTaxpayerGstr3b(
+    @Param('year') year: string,
+    @Param('month') month: string,
+    @Query('username') username: string,
+    @Query('gstin') gstin: string,
+  ) {
+    const data = await this.gstTaxpayerReturnsService.fetchGstr3b(
+      { username, gstin },
+      Number(year),
+      Number(month),
+    );
+    return this.successResponse('taxpayer-returns.gstr-3b', data);
   }
 
   /**
@@ -273,6 +295,16 @@ export class GstController {
       metadata: job.metadata,
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
+    };
+  }
+
+  private successResponse(flow: string, data: Record<string, any>) {
+    return {
+      success: true,
+      flow,
+      requestId: randomUUID(),
+      timestamp: new Date().toISOString(),
+      data,
     };
   }
 }

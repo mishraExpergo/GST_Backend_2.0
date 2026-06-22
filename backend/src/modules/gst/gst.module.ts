@@ -9,6 +9,7 @@ import { Job } from '../../entities/job.entity';
 import { JobTask } from '../../entities/job-task.entity';
 import { PrimaryGstAggregation } from '../../entities/primary-gst-aggregation.entity';
 import { SecondaryGstAggregation } from '../../entities/secondary-gst-aggregation.entity';
+import { TaxpayerAuthSession } from '../../entities/taxpayer-auth-session.entity';
 import { FileStorageService } from '../shared/services/file-storage.service';
 import { getRabbitMQClientConfig, QUEUES } from '../../config/rabbitmq.config';
 import { GstConsumer } from './gst.consumer';
@@ -16,23 +17,12 @@ import { GstAuthService } from './services/gst-auth.service';
 import { GstApiService } from './services/gst-api.service';
 import { GstComplianceService } from './services/gst-compliance.service';
 import { GstAggregationService } from './services/gst-aggregation.service';
+import { GstTaxpayerAuthService } from './services/gst-taxpayer-auth.service';
+import { GstTaxpayerReturnsService } from './services/gst-taxpayer-returns.service';
 import {
   GstComplianceRecord,
   GstComplianceSchema,
 } from './schemas/gst-compliance.schema';
-import {
-  GstrComplianceRecord,
-  GstrComplianceSchema,
-} from './schemas/gst-gstr-compliance.schema';
-import {
-  Gstr2bComplianceRecord,
-  Gstr2bComplianceSchema,
-} from './schemas/gst-2b-compliance.schema';
-import {
-  Gstr3bComplianceRecord,
-  Gstr3bComplianceSchema,
-} from './schemas/gst-3b-compliance.schema';
-import { WhitebooksApiService } from './services/whitebooks-api.service';
 
 const enableRabbitMQ = process.env.ENABLE_RABBITMQ === 'true';
 const enableMongo = process.env.ENABLE_MONGO === 'true';
@@ -44,23 +34,12 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
       JobTask,
       PrimaryGstAggregation,
       SecondaryGstAggregation,
+      TaxpayerAuthSession,
     ]),
     ...(enableMongo
       ? [
           MongooseModule.forFeature([
             { name: GstComplianceRecord.name, schema: GstComplianceSchema },
-            {
-              name: GstrComplianceRecord.name,
-              schema: GstrComplianceSchema,
-            },
-            {
-              name: Gstr2bComplianceRecord.name,
-              schema: Gstr2bComplianceSchema,
-            },
-            {
-              name: Gstr3bComplianceRecord.name,
-              schema: Gstr3bComplianceSchema,
-            },
           ]),
         ]
       : []),
@@ -88,54 +67,6 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
               useFactory: (configService: ConfigService) =>
                 getRabbitMQClientConfig(configService, QUEUES.VERIFY_CHUNK),
             },
-            {
-              name: 'VERIFY_GSTR_PARENT_SERVICE',
-              imports: [ConfigModule],
-              inject: [ConfigService],
-              useFactory: (configService: ConfigService) =>
-                getRabbitMQClientConfig(
-                  configService,
-                  QUEUES.VERIFY_GSTR_PARENT,
-                ),
-            },
-            {
-              name: 'VERIFY_GSTR_CHUNK_SERVICE',
-              imports: [ConfigModule],
-              inject: [ConfigService],
-              useFactory: (configService: ConfigService) =>
-                getRabbitMQClientConfig(
-                  configService,
-                  QUEUES.VERIFY_GSTR_CHUNK,
-                ),
-            },
-            {
-              name: 'VERIFY_2B_PARENT_SERVICE',
-              imports: [ConfigModule],
-              inject: [ConfigService],
-              useFactory: (configService: ConfigService) =>
-                getRabbitMQClientConfig(configService, QUEUES.VERIFY_2B_PARENT),
-            },
-            {
-              name: 'VERIFY_2B_CHUNK_SERVICE',
-              imports: [ConfigModule],
-              inject: [ConfigService],
-              useFactory: (configService: ConfigService) =>
-                getRabbitMQClientConfig(configService, QUEUES.VERIFY_2B_CHUNK),
-            },
-            {
-              name: 'VERIFY_3B_PARENT_SERVICE',
-              imports: [ConfigModule],
-              inject: [ConfigService],
-              useFactory: (configService: ConfigService) =>
-                getRabbitMQClientConfig(configService, QUEUES.VERIFY_3B_PARENT),
-            },
-            {
-              name: 'VERIFY_3B_CHUNK_SERVICE',
-              imports: [ConfigModule],
-              inject: [ConfigService],
-              useFactory: (configService: ConfigService) =>
-                getRabbitMQClientConfig(configService, QUEUES.VERIFY_3B_CHUNK),
-            },
           ]),
         ]
       : []),
@@ -146,9 +77,10 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
     FileStorageService,
     GstAuthService,
     GstApiService,
-    WhitebooksApiService,
     GstComplianceService,
     GstAggregationService,
+    GstTaxpayerAuthService,
+    GstTaxpayerReturnsService,
   ],
   exports: [GstService],
 })
