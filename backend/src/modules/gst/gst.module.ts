@@ -28,6 +28,10 @@ import {
   Gstr2bComplianceRecord,
   Gstr2bComplianceSchema,
 } from './schemas/gst-2b-compliance.schema';
+import {
+  Gstr1ComplianceRecord,
+  Gstr1ComplianceSchema,
+} from './schemas/gst-gstr1-compliance.schema';
 
 const enableRabbitMQ = process.env.ENABLE_RABBITMQ === 'true';
 const enableMongo = process.env.ENABLE_MONGO === 'true';
@@ -51,6 +55,10 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
             {
               name: Gstr2bComplianceRecord.name,
               schema: Gstr2bComplianceSchema,
+            },
+            {
+              name: Gstr1ComplianceRecord.name,
+              schema: Gstr1ComplianceSchema,
             },
           ]),
         ]

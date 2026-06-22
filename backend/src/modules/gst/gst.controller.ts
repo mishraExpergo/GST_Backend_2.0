@@ -17,6 +17,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { ClientProxy } from '@nestjs/microservices';
 import { GstService } from './gst.service';
 import { GstComplianceService } from './services/gst-compliance.service';
+import { GstAggregationService } from './services/gst-aggregation.service';
 import { FileStorageService } from '../shared/services/file-storage.service';
 
 @Controller('gst')
@@ -25,6 +26,7 @@ export class GstController {
     private readonly gstService: GstService,
     private readonly fileStorageService: FileStorageService,
     private readonly gstComplianceService: GstComplianceService,
+    private readonly gstAggregationService: GstAggregationService,
     @Optional() @Inject('EXCEL_SERVICE') private readonly excelClient?: ClientProxy,
   ) {}
 
@@ -32,6 +34,8 @@ export class GstController {
    * POST /gst/upload
    * multipart/form-data:
    *   - file:      .xlsx / .xls / .csv file (required)
+   * 
+   * 
    *   - tableName: target table name to create in Postgres (required)
    *
    * Asynchronously offloads processing to RabbitMQ queue.
@@ -164,6 +168,26 @@ export class GstController {
       jobId: job.id,
       status: job.status,
       checkStatusUrl: `/gst/status/${job.id}`,
+    };
+  }
+
+  /**
+   * POST /gst/aggregate-gstr1
+   * Runs GSTR-1 aggregation from gst_gstR1_complaince_data into
+   * primary_gst_aggregation. Useful when GSTR-1 Mongo data was seeded manually.
+   *
+   * body (optional):
+   *   - tableName: source Postgres table (defaults to "gst_uploaded_file_data")
+   */
+  @Post('aggregate-gstr1')
+  @HttpCode(HttpStatus.OK)
+  async aggregateGstr1(@Body('tableName') tableName?: string) {
+    const result =
+      await this.gstAggregationService.runGstr1AggregationForTable(tableName);
+
+    return {
+      message: 'GSTR-1 aggregation completed.',
+      customersProcessed: result.customersProcessed,
     };
   }
 

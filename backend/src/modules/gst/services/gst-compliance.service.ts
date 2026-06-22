@@ -18,7 +18,12 @@ import { GstApiService } from './gst-api.service';
 import { GstAggregationService } from './gst-aggregation.service';
 import { GstComplianceRecord } from '../schemas/gst-compliance.schema';
 import { GstrComplianceRecord } from '../schemas/gst-gstr-compliance.schema';
+import { Gstr1ComplianceRecord } from '../schemas/gst-gstr1-compliance.schema';
 import { Gstr2bComplianceRecord } from '../schemas/gst-2b-compliance.schema';
+import {
+  buildGstr1ReturnsFromResponse,
+  resolveIdentityPan,
+} from './gst-gstr1-aggregation.util';
 
 type GstEntityType = 'PRIMARY' | 'CONSIDERED_ENTITY';
 
@@ -72,6 +77,9 @@ export class GstComplianceService {
     @Optional()
     @InjectModel(GstrComplianceRecord.name)
     private readonly gstrComplianceModel?: Model<GstrComplianceRecord>,
+    @Optional()
+    @InjectModel(Gstr1ComplianceRecord.name)
+    private readonly gstr1ComplianceModel?: Model<Gstr1ComplianceRecord>,
     @Optional()
     @InjectModel(Gstr2bComplianceRecord.name)
     private readonly gstr2bComplianceModel?: Model<Gstr2bComplianceRecord>,
@@ -329,9 +337,9 @@ export class GstComplianceService {
     financialYear: string,
     rawTableName?: string,
   ): Promise<Job> {
-    if (!this.gstrComplianceModel) {
+    if (!this.gstr1ComplianceModel) {
       throw new ServiceUnavailableException(
-        'MongoDB is not enabled. Set ENABLE_MONGO=true and configure MONGO_URI to store GSTR compliance data.',
+        'MongoDB is not enabled. Set ENABLE_MONGO=true and configure MONGO_URI to store GSTR-1 compliance data.',
       );
     }
 
@@ -373,7 +381,7 @@ export class GstComplianceService {
       const { pending: rows, skippedExisting } =
         await this.partitionUnprocessedRows(
           allRows,
-          this.gstrComplianceModel!,
+          this.gstr1ComplianceModel!,
           { financialYear },
         );
 
@@ -488,6 +496,7 @@ export class GstComplianceService {
         await this.gstService.incrementCompletedChunks(jobId);
       if (justCompleted) {
         await this.finalizeJob(jobId);
+        void this.maybeTriggerGstrAggregation(jobId);
       }
     }
   }
@@ -526,9 +535,15 @@ export class GstComplianceService {
       result.verified++;
 
       const gstr = await this.gstApiService.trackGstr(gstin, financialYear);
+      const pan = resolveIdentityPan(
+        row.pan,
+        verify?.data?.data?.pan ?? null,
+        gstin,
+      );
+      const returns = buildGstr1ReturnsFromResponse(gstr);
 
       // Idempotent upsert keyed on loan + GSTIN + financial year.
-      await this.gstrComplianceModel!.updateOne(
+      await this.gstr1ComplianceModel!.updateOne(
         { loanId: row.loan_id, gstin, financialYear },
         {
           $set: {
@@ -536,13 +551,16 @@ export class GstComplianceService {
             customerId: row.customer_id ?? null,
             entityType: row.entity_type,
             gstin,
-            pan: row.pan ?? verify?.data?.data?.pan ?? null,
+            gstNo: gstin,
+            pan,
             legalName: verify?.data?.data?.legalName ?? null,
             status,
             financialYear,
             sourceTable: tableName,
+            returnType: 'GSTR-1',
             verifyResponse: verify,
             gstrResponse: gstr,
+            returns,
           },
         },
         { upsert: true },
@@ -841,6 +859,16 @@ export class GstComplianceService {
     } catch (err) {
       this.logger.error(
         `Compliance aggregation trigger failed for job ${jobId}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  private async maybeTriggerGstrAggregation(jobId: string): Promise<void> {
+    try {
+      await this.gstAggregationService.triggerAfterGstrJob(jobId);
+    } catch (err) {
+      this.logger.error(
+        `GSTR-1 aggregation trigger failed for job ${jobId}: ${(err as Error).message}`,
       );
     }
   }
