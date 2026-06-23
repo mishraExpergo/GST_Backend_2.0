@@ -3,10 +3,14 @@ import {
   Injectable,
   InternalServerErrorException,
   Logger,
+  Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
+import { InjectConnection } from '@nestjs/mongoose';
 import { DataSource } from 'typeorm';
-import * as XLSX from 'xlsx';
+import { Connection } from 'mongoose';
+import * as XLSX from 'xlsx';  
 
 type PgType = 'INTEGER' | 'NUMERIC' | 'TIMESTAMP' | 'BOOLEAN' | 'TEXT';
 
@@ -16,18 +20,200 @@ interface ColumnDef {
   type: PgType;
 }
 
+export const GST_UPLOAD_TABLE = 'gst_uploaded_file_data';
+
 @Injectable()
 export class GstService {
   private readonly logger = new Logger(GstService.name);
 
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
+    @Optional()
+    @InjectConnection()
+    private readonly mongoConnection?: Connection,
   ) {}
+
+  async getPublicComplianceData(
+    page = 1,
+    limit = 50,
+    companyId?: string,
+    gstin?: string,
+  ) {
+    if (!this.mongoConnection || this.mongoConnection.readyState !== 1) {
+      throw new ServiceUnavailableException(
+        'MongoDB connection is not available. Set ENABLE_MONGO=true and configure MONGO_URI.',
+      );
+    }
+
+    const safePage = Math.max(1, page);
+    const safeLimit = Math.min(Math.max(1, limit), 200);
+    const skip = (safePage - 1) * safeLimit;
+    const collection = this.mongoConnection.collection('gst_compliance_data');
+
+    // Treat records as public by default when visibility flags are missing.
+    // This avoids returning blank data for legacy records that don't store these flags.
+    const visibilityFilter = {
+      $or: [
+        { isPublic: true },
+        { public: true },
+        { visibility: /^public$/i },
+        { access: /^public$/i },
+        {
+          $and: [
+            { isPublic: { $exists: false } },
+            { public: { $exists: false } },
+            { visibility: { $exists: false } },
+            { access: { $exists: false } },
+          ],
+        },
+      ],
+    };
+
+    const scopedFilters: Record<string, unknown>[] = [];
+    const trimmedCompanyId = companyId?.trim();
+    const trimmedGstin = gstin?.trim();
+
+    if (trimmedCompanyId) {
+      scopedFilters.push(
+        { companyId: trimmedCompanyId },
+        { company_id: trimmedCompanyId },
+        { company: trimmedCompanyId },
+      );
+    }
+
+    if (trimmedGstin) {
+      const normalizedGstin = trimmedGstin.toUpperCase();
+      const escapedNormalizedGstin = normalizedGstin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      scopedFilters.push(
+        { gstin: normalizedGstin },
+        { gstin: trimmedGstin },
+        { gstin: normalizedGstin.toLowerCase() },
+        { gstin: { $regex: `^${escapedNormalizedGstin}$`, $options: 'i' } },
+        { gstinNo: normalizedGstin },
+        { gstinNo: { $regex: `^${escapedNormalizedGstin}$`, $options: 'i' } },
+        { gstin_no: normalizedGstin },
+        { gstin_no: { $regex: `^${escapedNormalizedGstin}$`, $options: 'i' } },
+        { gstinNumber: normalizedGstin },
+        { gstinNumber: { $regex: `^${escapedNormalizedGstin}$`, $options: 'i' } },
+        { GSTIN: normalizedGstin },
+        { GSTIN: { $regex: `^${escapedNormalizedGstin}$`, $options: 'i' } },
+        { 'verifyresponse.data.data.gstin': normalizedGstin },
+        {
+          'verifyresponse.data.data.gstin': {
+            $regex: `^${escapedNormalizedGstin}$`,
+            $options: 'i',
+          },
+        },
+      );
+    }
+
+    const filter =
+      scopedFilters.length > 0
+        ? {
+            $and: [visibilityFilter, { $or: scopedFilters }],
+          }
+        : visibilityFilter;
+
+    const projection = {
+      __v: 0,
+      password: 0,
+      token: 0,
+      refreshToken: 0,
+      accessToken: 0,
+      apiKey: 0,
+      secret: 0,
+    };
+
+    try {
+      const [total, docs] = await Promise.all([
+        collection.countDocuments(filter),
+        collection
+          .find(filter, { projection })
+          .sort({ updatedAt: -1, _id: -1 })
+          .skip(skip)
+          .limit(safeLimit)
+          .toArray(),
+      ]);
+
+      const data = docs.map((doc) => {
+        const { _id, ...rest } = doc as Record<string, unknown> & { _id?: unknown };
+        return {
+          id: _id ? String(_id) : undefined,
+          ...rest,
+        };
+      });
+
+      return {
+        collection: 'gst_compliance_data',
+        total,
+        page: safePage,
+        limit: safeLimit,
+        data,
+      };
+    } catch (err) {
+      this.logger.error(
+        'Failed to fetch public data from "gst_compliance_data"',
+        err as Error,
+      );
+      throw new InternalServerErrorException(
+        `Failed to fetch MongoDB data: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  async getTableData(rawTableName: string, page = 1, limit = 50) {
+    const tableName = this.sanitizeIdentifier(rawTableName);
+    const safePage = Math.max(1, page);
+    const safeLimit = Math.min(Math.max(1, limit), 500);
+    const offset = (safePage - 1) * safeLimit;
+
+    const exists = await this.dataSource.query<{ exists: boolean }[]>(
+      `SELECT EXISTS (
+         SELECT 1 FROM information_schema.tables
+         WHERE table_schema = 'public' AND table_name = $1
+       ) AS "exists"`,
+      [tableName],
+    );
+
+    if (!exists[0]?.exists) {
+      return {
+        table: tableName,
+        total: 0,
+        page: safePage,
+        limit: safeLimit,
+        data: [],
+      };
+    }
+
+    try {
+      const countResult = await this.dataSource.query<{ total: number }[]>(
+        `SELECT COUNT(*)::int AS total FROM "${tableName}"`,
+      );
+      const total = countResult[0]?.total ?? 0;
+
+      const rows = await this.dataSource.query(
+        `SELECT * FROM "${tableName}" ORDER BY id ASC LIMIT $1 OFFSET $2`,
+        [safeLimit, offset],
+      );
+
+      return {
+        table: tableName,
+        total,
+        page: safePage,
+        limit: safeLimit,
+        data: rows,
+      };
+    } catch (err) {
+      this.logger.error(`Failed to fetch data from "${tableName}"`, err as Error);
+      throw new InternalServerErrorException(
+        `Failed to fetch data: ${(err as Error).message}`,
+      );
+    }
+  }
 
   async processExcel(buffer: Buffer, rawTableName: string) {
     const tableName = this.sanitizeIdentifier(rawTableName);
 
-    // 1. Parse the Excel file
     const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: true });
     const sheetName = workbook.SheetNames[0];
     if (!sheetName) {
@@ -46,7 +232,6 @@ export class GstService {
       );
     }
 
-    // 2. Collect headers from union of all row keys (handles sparse rows)
     const headerSet = new Set<string>();
     for (const row of rows) {
       Object.keys(row).forEach((k) => headerSet.add(k));
@@ -56,7 +241,6 @@ export class GstService {
       throw new BadRequestException('No columns detected in the Excel sheet.');
     }
 
-    // 3. Build column defs with sanitized names + inferred types
     const columns: ColumnDef[] = rawHeaders.map((header) => ({
       raw: header,
       name: this.sanitizeIdentifier(header),
@@ -73,7 +257,6 @@ export class GstService {
       seen.add(col.name);
     }
 
-    // 4. Create table + insert rows in a single transaction
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
@@ -111,7 +294,7 @@ export class GstService {
       await queryRunner.commitTransaction();
 
       return {
-        message: 'Excel uploaded and table created successfully.',
+        message: 'Excel uploaded successfully. Dashboard data has been updated.',
         table: tableName,
         sheet: sheetName,
         columns: columns.map(({ raw, name, type }) => ({ raw, name, type })),
@@ -128,8 +311,6 @@ export class GstService {
     }
   }
 
-  // ----------------------- helpers -----------------------
-
   private sanitizeIdentifier(name: string): string {
     const cleaned = String(name ?? '')
       .trim()
@@ -140,10 +321,7 @@ export class GstService {
     if (!cleaned) {
       throw new BadRequestException(`Invalid identifier: "${name}"`);
     }
-    // Postgres identifiers can't start with a digit (unquoted), but we quote
-    // everything anyway. Still, prefix with underscore for safety.
     const safe = /^\d/.test(cleaned) ? `_${cleaned}` : cleaned;
-    // Postgres identifier limit is 63 chars
     return safe.slice(0, 63);
   }
 
@@ -162,10 +340,8 @@ export class GstService {
       if (v === null || v === undefined || v === '') continue;
       hasValue = true;
 
-      // boolean check
       if (typeof v !== 'boolean') allBool = false;
 
-      // number check
       if (typeof v === 'number' && Number.isFinite(v)) {
         if (!Number.isInteger(v)) allInt = false;
       } else {
@@ -173,7 +349,6 @@ export class GstService {
         allNumber = false;
       }
 
-      // date check
       if (!(v instanceof Date)) {
         allDate = false;
       }

@@ -7,17 +7,23 @@ import { AppService } from './app.service';
 import { toNumber } from './config/database.config';
 import { GstModule } from './modules/gst/gst.module.js';
 
+const enableMongo = process.env.ENABLE_MONGO === 'true';
+
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
     }),
-    MongooseModule.forRootAsync({
-      inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        uri: configService.getOrThrow<string>('MONGO_URI'),
-      }),
-    }),
+    ...(enableMongo
+      ? [
+          MongooseModule.forRootAsync({
+            inject: [ConfigService],
+            useFactory: (configService: ConfigService) => ({
+              uri: configService.getOrThrow<string>('MONGO_URI'),
+            }),
+          }),
+        ]
+      : []),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
@@ -29,6 +35,10 @@ import { GstModule } from './modules/gst/gst.module.js';
         database: configService.getOrThrow<string>('POSTGRES_DB'),
         autoLoadEntities: true,
         synchronize: configService.get<string>('POSTGRES_SYNC', 'false') === 'true',
+        ssl:
+          configService.get<string>('POSTGRES_SSL', 'false') === 'true'
+            ? { rejectUnauthorized: false }
+            : false,
       }),
     }),
     GstModule,
@@ -37,3 +47,4 @@ import { GstModule } from './modules/gst/gst.module.js';
   providers: [AppService],
 })
 export class AppModule {}
+
