@@ -11,9 +11,6 @@ export class PrimaryGstAggregation {
   @Column({ name: 'associated_loan_id', type: 'text', nullable: true })
   associatedLoanId: string | null;
 
-  @Column({ name: 'primary_gst_no', type: 'text', nullable: true })
-  primaryGstNo: string | null;
-
   @Column({ name: 'aggregation_variable', type: 'text', nullable: true })
   aggregationVariable: string | null;
 }

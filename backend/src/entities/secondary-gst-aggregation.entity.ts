@@ -11,9 +11,6 @@ export class SecondaryGstAggregation {
   @Column({ name: 'associated_loan_id', type: 'text', nullable: true })
   associatedLoanId: string | null;
 
-  @Column({ name: 'considered_entity_gst_no', type: 'text', nullable: true })
-  consideredEntityGstNo: string | null;
-
   @Column({ name: 'aggregation_variable', type: 'text', nullable: true })
   aggregationVariable: string | null;
 }

@@ -8,10 +8,17 @@ import {
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import { GstTaxpayerAuthService } from './gst-taxpayer-auth.service';
+import { ApiRequestLogService } from './api-request-log.service';
 
 interface TaxpayerIdentity {
   username: string;
   gstin: string;
+}
+
+interface RequestTrackingContext {
+  associatedLoanId?: string | null;
+  customerId?: string | null;
+  dataSource?: string | null;
 }
 
 @Injectable()
@@ -22,12 +29,14 @@ export class GstTaxpayerReturnsService {
   constructor(
     private readonly config: ConfigService,
     private readonly taxpayerAuthService: GstTaxpayerAuthService,
+    private readonly apiRequestLogService: ApiRequestLogService,
   ) {}
 
   async fetchGstr1(
     identity: TaxpayerIdentity,
     year: number,
     month: number,
+    tracking: RequestTrackingContext = {},
   ): Promise<Record<string, any>> {
     const { normalizedIdentity, yearNum, monthNum } = this.validateInputs(
       identity,
@@ -40,6 +49,7 @@ export class GstTaxpayerReturnsService {
       'GSTR-1',
       yearNum,
       monthNum,
+      tracking,
     );
   }
 
@@ -47,6 +57,7 @@ export class GstTaxpayerReturnsService {
     identity: TaxpayerIdentity,
     year: number,
     month: number,
+    tracking: RequestTrackingContext = {},
   ): Promise<Record<string, any>> {
     const { normalizedIdentity, yearNum, monthNum } = this.validateInputs(
       identity,
@@ -59,6 +70,7 @@ export class GstTaxpayerReturnsService {
       'GSTR-2B',
       yearNum,
       monthNum,
+      tracking,
     );
   }
 
@@ -66,6 +78,7 @@ export class GstTaxpayerReturnsService {
     identity: TaxpayerIdentity,
     year: number,
     month: number,
+    tracking: RequestTrackingContext = {},
   ): Promise<Record<string, any>> {
     const { normalizedIdentity, yearNum, monthNum } = this.validateInputs(
       identity,
@@ -78,6 +91,7 @@ export class GstTaxpayerReturnsService {
       'GSTR-3B',
       yearNum,
       monthNum,
+      tracking,
     );
   }
 
@@ -93,6 +107,7 @@ export class GstTaxpayerReturnsService {
     returnType: 'GSTR-1' | 'GSTR-2B' | 'GSTR-3B',
     year: number,
     month: number,
+    tracking: RequestTrackingContext,
   ): Promise<Record<string, any>> {
     const maxRetries = Number(this.config.get('GST_API_MAX_RETRIES', '3'));
     const baseDelay = Number(this.config.get('GST_API_RETRY_BASE_MS', '500'));
@@ -102,29 +117,49 @@ export class GstTaxpayerReturnsService {
 
     let attempt = 0;
     let retriedAfter401 = false;
+    const log = await this.apiRequestLogService.createProcessingLog({
+      gstrFamily: 'GSTR',
+      gstrType: returnType,
+      apiName: path,
+      associatedLoanId: tracking.associatedLoanId ?? null,
+      customerId: tracking.customerId ?? null,
+      gstNumber: identity.gstin,
+      dataSource: tracking.dataSource ?? 'sandbox',
+      metadata: { username: identity.username, year, month },
+    });
 
     while (true) {
-      const accessToken = await this.taxpayerAuthService.getAccessTokenForTaxpayer(
-        identity,
-        forceRefreshPerRequest,
-      );
-
       const url = `${this.baseUrl}${path}`;
-      const response = await axios.get(url, {
-        headers: {
-          authorization: accessToken,
-          'x-api-key': this.config.get<string>('GST_API_KEY_LIVE', ''),
-          'x-api-version': this.config.get<string>('GST_API_VERSION', '1.0.0'),
-        },
-        timeout: this.timeoutMs,
-        validateStatus: () => true,
-      });
+      const response = await (async () => {
+        try {
+          const accessToken = await this.taxpayerAuthService.getAccessTokenForTaxpayer(
+            identity,
+            forceRefreshPerRequest,
+          );
+          return await axios.get(url, {
+            headers: {
+              authorization: accessToken,
+              'x-api-key': this.config.get<string>('GST_API_KEY_LIVE', ''),
+              'x-api-version': this.config.get<string>('GST_API_VERSION', '1.0.0'),
+            },
+            timeout: this.timeoutMs,
+            validateStatus: () => true,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          await this.apiRequestLogService.markFailure(log.id, null, message, {
+            url,
+          });
+          throw err;
+        }
+      })();
 
       if (
         (response.status === 401 || response.status === 403) &&
         !retriedAfter401
       ) {
         retriedAfter401 = true;
+        await this.apiRequestLogService.incrementRetry(log.id);
         await this.taxpayerAuthService.refreshAccessToken(identity);
         continue;
       }
@@ -134,11 +169,18 @@ export class GstTaxpayerReturnsService {
         attempt < maxRetries
       ) {
         attempt++;
+        await this.apiRequestLogService.incrementRetry(log.id);
         await this.delay(baseDelay * 2 ** (attempt - 1));
         continue;
       }
 
       if (response.status === 401 || response.status === 403) {
+        await this.apiRequestLogService.markFailure(
+          log.id,
+          response.status,
+          `${returnType} unauthorized`,
+          { url },
+        );
         throw new UnauthorizedException(
           `${returnType} fetch unauthorized. Taxpayer session may be expired; regenerate OTP.`,
         );
@@ -146,6 +188,12 @@ export class GstTaxpayerReturnsService {
 
       if (response.status < 200 || response.status >= 300) {
         const payload = JSON.stringify(response.data ?? {}).slice(0, 300);
+        await this.apiRequestLogService.markFailure(
+          log.id,
+          response.status,
+          payload,
+          { url },
+        );
         this.logger.error(
           `${returnType} fetch failed for ${identity.gstin} (${year}-${month}) with ${response.status}: ${payload}`,
         );
@@ -153,6 +201,10 @@ export class GstTaxpayerReturnsService {
           `${returnType} API failed with status ${response.status}.`,
         );
       }
+
+      await this.apiRequestLogService.markSuccess(log.id, response.status, {
+        url,
+      });
 
       return {
         message: `${returnType} fetched successfully.`,

@@ -20,7 +20,9 @@ import { GstService } from './gst.service';
 import { GstComplianceService } from './services/gst-compliance.service';
 import { GstTaxpayerAuthService } from './services/gst-taxpayer-auth.service';
 import { GstTaxpayerReturnsService } from './services/gst-taxpayer-returns.service';
+import { ApiRequestLogService } from './services/api-request-log.service';
 import { FileStorageService } from '../shared/services/file-storage.service';
+import type { ApiRequestStatus } from '../../entities/api-request-log.entity';
 
 @Controller('gst')
 export class GstController {
@@ -30,6 +32,7 @@ export class GstController {
     private readonly gstComplianceService: GstComplianceService,
     private readonly gstTaxpayerAuthService: GstTaxpayerAuthService,
     private readonly gstTaxpayerReturnsService: GstTaxpayerReturnsService,
+    private readonly apiRequestLogService: ApiRequestLogService,
     @Optional() @Inject('EXCEL_SERVICE') private readonly excelClient?: ClientProxy,
   ) {}
 
@@ -223,11 +226,15 @@ export class GstController {
     @Param('month') month: string,
     @Query('username') username: string,
     @Query('gstin') gstin: string,
+    @Query('associatedLoanId') associatedLoanId?: string,
+    @Query('customerId') customerId?: string,
+    @Query('dataSource') dataSource?: string,
   ) {
     const data = await this.gstTaxpayerReturnsService.fetchGstr1(
       { username, gstin },
       Number(year),
       Number(month),
+      { associatedLoanId, customerId, dataSource },
     );
     return this.successResponse('taxpayer-returns.gstr-1', data);
   }
@@ -241,11 +248,15 @@ export class GstController {
     @Param('month') month: string,
     @Query('username') username: string,
     @Query('gstin') gstin: string,
+    @Query('associatedLoanId') associatedLoanId?: string,
+    @Query('customerId') customerId?: string,
+    @Query('dataSource') dataSource?: string,
   ) {
     const data = await this.gstTaxpayerReturnsService.fetchGstr2b(
       { username, gstin },
       Number(year),
       Number(month),
+      { associatedLoanId, customerId, dataSource },
     );
     return this.successResponse('taxpayer-returns.gstr-2b', data);
   }
@@ -259,13 +270,74 @@ export class GstController {
     @Param('month') month: string,
     @Query('username') username: string,
     @Query('gstin') gstin: string,
+    @Query('associatedLoanId') associatedLoanId?: string,
+    @Query('customerId') customerId?: string,
+    @Query('dataSource') dataSource?: string,
   ) {
     const data = await this.gstTaxpayerReturnsService.fetchGstr3b(
       { username, gstin },
       Number(year),
       Number(month),
+      { associatedLoanId, customerId, dataSource },
     );
     return this.successResponse('taxpayer-returns.gstr-3b', data);
+  }
+
+  /**
+   * GET /gst/api-logs
+   * Optional filters:
+   * gstrType, status, customerId, associatedLoanId, gstNumber,
+   * dataSource, apiName, fromDate, toDate, limit, offset
+   */
+  @Get('api-logs')
+  async getApiLogs(
+    @Query('gstrType') gstrType?: 'GSTR-1' | 'GSTR-2B' | 'GSTR-3B',
+    @Query('status') status?: string,
+    @Query('customerId') customerId?: string,
+    @Query('associatedLoanId') associatedLoanId?: string,
+    @Query('gstNumber') gstNumber?: string,
+    @Query('dataSource') dataSource?: string,
+    @Query('apiName') apiName?: string,
+    @Query('fromDate') fromDate?: string,
+    @Query('toDate') toDate?: string,
+    @Query('limit') limitRaw?: string,
+    @Query('offset') offsetRaw?: string,
+  ) {
+    const allowedGstrTypes = new Set(['GSTR-1', 'GSTR-2B', 'GSTR-3B']);
+    const allowedStatuses = new Set(['PROCESSING', 'SUCCESS', 'FAILED']);
+
+    if (gstrType && !allowedGstrTypes.has(gstrType)) {
+      throw new BadRequestException(
+        'Invalid gstrType. Allowed values: GSTR-1, GSTR-2B, GSTR-3B.',
+      );
+    }
+    if (status && !allowedStatuses.has(status)) {
+      throw new BadRequestException(
+        'Invalid status. Allowed values: PROCESSING, SUCCESS, FAILED.',
+      );
+    }
+    const normalizedStatus = status as ApiRequestStatus | undefined;
+
+    const parsedFromDate = this.parseDate(fromDate, 'fromDate');
+    const parsedToDate = this.parseDate(toDate, 'toDate');
+    const limit = this.parseIntWithBounds(limitRaw, 'limit', 1, 200, 50);
+    const offset = this.parseIntWithBounds(offsetRaw, 'offset', 0, 1000000, 0);
+
+    const data = await this.apiRequestLogService.getLogs({
+      gstrType,
+      status: normalizedStatus,
+      customerId,
+      associatedLoanId,
+      gstNumber,
+      dataSource,
+      apiName,
+      fromDate: parsedFromDate,
+      toDate: parsedToDate,
+      limit,
+      offset,
+    });
+
+    return this.successResponse('taxpayer-returns.api-logs', data);
   }
 
   /**
@@ -306,5 +378,34 @@ export class GstController {
       timestamp: new Date().toISOString(),
       data,
     };
+  }
+
+  private parseDate(rawDate: string | undefined, fieldName: string): Date | undefined {
+    if (!rawDate) return undefined;
+    const parsed = new Date(rawDate);
+    if (Number.isNaN(parsed.getTime())) {
+      throw new BadRequestException(`${fieldName} must be a valid ISO date string.`);
+    }
+    return parsed;
+  }
+
+  private parseIntWithBounds(
+    value: string | undefined,
+    fieldName: string,
+    min: number,
+    max: number,
+    defaultValue: number,
+  ): number {
+    if (!value || value.trim() === '') return defaultValue;
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isNaN(parsed)) {
+      throw new BadRequestException(`${fieldName} must be an integer.`);
+    }
+    if (parsed < min || parsed > max) {
+      throw new BadRequestException(
+        `${fieldName} must be between ${min} and ${max}.`,
+      );
+    }
+    return parsed;
   }
 }

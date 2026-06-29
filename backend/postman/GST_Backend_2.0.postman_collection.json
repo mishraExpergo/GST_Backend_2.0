@@ -1,0 +1,609 @@
+{
+  "info": {
+    "name": "GST Backend 2.0",
+    "_postman_id": "f6cf7de4-c7f4-4bde-bdbf-a41cbeb8d8b6",
+    "description": "Postman collection for GST Backend APIs (Auth + GST + Taxpayer Returns + API Logs).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000"
+    },
+    {
+      "key": "token",
+      "value": ""
+    },
+    {
+      "key": "username",
+      "value": "demo_user"
+    },
+    {
+      "key": "password",
+      "value": "demo_password"
+    },
+    {
+      "key": "gstin",
+      "value": "27ABCDE1234F1Z5"
+    },
+    {
+      "key": "otp",
+      "value": "123456"
+    },
+    {
+      "key": "year",
+      "value": "2026"
+    },
+    {
+      "key": "month",
+      "value": "6"
+    },
+    {
+      "key": "jobId",
+      "value": ""
+    },
+    {
+      "key": "tableName",
+      "value": "gst_uploaded_file_data"
+    },
+    {
+      "key": "associatedLoanId",
+      "value": "LOAN123"
+    },
+    {
+      "key": "customerId",
+      "value": "CUST123"
+    },
+    {
+      "key": "dataSource",
+      "value": "sandbox"
+    }
+  ],
+  "item": [
+    {
+      "name": "Root",
+      "item": [
+        {
+          "name": "GET /",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                ""
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "POST /auth/login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 201/200', function () {",
+                  "  pm.expect([200, 201]).to.include(pm.response.code);",
+                  "});",
+                  "const json = pm.response.json();",
+                  "if (json && json.access_token) {",
+                  "  pm.collectionVariables.set('token', json.access_token);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{username}}\",\n  \"password\": \"{{password}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /auth/me",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "GST Jobs",
+      "item": [
+        {
+          "name": "POST /gst/upload",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": ""
+                },
+                {
+                  "key": "tableName",
+                  "value": "{{tableName}}",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/gst/upload",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "gst",
+                "upload"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /gst/verify-and-fetch",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tableName\": \"{{tableName}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/gst/verify-and-fetch",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "gst",
+                "verify-and-fetch"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /gst/status/:jobId",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/gst/status/{{jobId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "gst",
+                "status",
+                "{{jobId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Taxpayer Auth",
+      "item": [
+        {
+          "name": "POST /gst/taxpayer/otp/generate",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{username}}\",\n  \"gstin\": \"{{gstin}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/gst/taxpayer/otp/generate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "gst",
+                "taxpayer",
+                "otp",
+                "generate"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /gst/taxpayer/otp/submit",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{username}}\",\n  \"gstin\": \"{{gstin}}\",\n  \"otp\": \"{{otp}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/gst/taxpayer/otp/submit",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "gst",
+                "taxpayer",
+                "otp",
+                "submit"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /gst/taxpayer/otp/verify",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{username}}\",\n  \"gstin\": \"{{gstin}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/gst/taxpayer/otp/verify",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "gst",
+                "taxpayer",
+                "otp",
+                "verify"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /gst/taxpayer/session/refresh",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{username}}\",\n  \"gstin\": \"{{gstin}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/gst/taxpayer/session/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "gst",
+                "taxpayer",
+                "session",
+                "refresh"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /gst/taxpayer/session/status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/gst/taxpayer/session/status?username={{username}}&gstin={{gstin}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "gst",
+                "taxpayer",
+                "session",
+                "status"
+              ],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "{{username}}"
+                },
+                {
+                  "key": "gstin",
+                  "value": "{{gstin}}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Taxpayer Returns",
+      "item": [
+        {
+          "name": "GET /gst/taxpayer/gstr-1/:year/:month",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/gst/taxpayer/gstr-1/{{year}}/{{month}}?username={{username}}&gstin={{gstin}}&associatedLoanId={{associatedLoanId}}&customerId={{customerId}}&dataSource={{dataSource}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "gst",
+                "taxpayer",
+                "gstr-1",
+                "{{year}}",
+                "{{month}}"
+              ],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "{{username}}"
+                },
+                {
+                  "key": "gstin",
+                  "value": "{{gstin}}"
+                },
+                {
+                  "key": "associatedLoanId",
+                  "value": "{{associatedLoanId}}"
+                },
+                {
+                  "key": "customerId",
+                  "value": "{{customerId}}"
+                },
+                {
+                  "key": "dataSource",
+                  "value": "{{dataSource}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /gst/taxpayer/gstr-2b/:year/:month",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/gst/taxpayer/gstr-2b/{{year}}/{{month}}?username={{username}}&gstin={{gstin}}&associatedLoanId={{associatedLoanId}}&customerId={{customerId}}&dataSource={{dataSource}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "gst",
+                "taxpayer",
+                "gstr-2b",
+                "{{year}}",
+                "{{month}}"
+              ],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "{{username}}"
+                },
+                {
+                  "key": "gstin",
+                  "value": "{{gstin}}"
+                },
+                {
+                  "key": "associatedLoanId",
+                  "value": "{{associatedLoanId}}"
+                },
+                {
+                  "key": "customerId",
+                  "value": "{{customerId}}"
+                },
+                {
+                  "key": "dataSource",
+                  "value": "{{dataSource}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /gst/taxpayer/gstr-3b/:year/:month",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/gst/taxpayer/gstr-3b/{{year}}/{{month}}?username={{username}}&gstin={{gstin}}&associatedLoanId={{associatedLoanId}}&customerId={{customerId}}&dataSource={{dataSource}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "gst",
+                "taxpayer",
+                "gstr-3b",
+                "{{year}}",
+                "{{month}}"
+              ],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "{{username}}"
+                },
+                {
+                  "key": "gstin",
+                  "value": "{{gstin}}"
+                },
+                {
+                  "key": "associatedLoanId",
+                  "value": "{{associatedLoanId}}"
+                },
+                {
+                  "key": "customerId",
+                  "value": "{{customerId}}"
+                },
+                {
+                  "key": "dataSource",
+                  "value": "{{dataSource}}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "API Logs",
+      "item": [
+        {
+          "name": "GET /gst/api-logs (all)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/gst/api-logs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "gst",
+                "api-logs"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /gst/api-logs (filtered)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/gst/api-logs?gstrType=GSTR-2B&status=FAILED&customerId={{customerId}}&associatedLoanId={{associatedLoanId}}&gstNumber={{gstin}}&dataSource={{dataSource}}&apiName=/taxpayerapi/v1/gstr2b&fromDate=2026-06-01T00:00:00.000Z&toDate=2026-06-30T23:59:59.999Z&limit=50&offset=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "gst",
+                "api-logs"
+              ],
+              "query": [
+                {
+                  "key": "gstrType",
+                  "value": "GSTR-2B"
+                },
+                {
+                  "key": "status",
+                  "value": "FAILED"
+                },
+                {
+                  "key": "customerId",
+                  "value": "{{customerId}}"
+                },
+                {
+                  "key": "associatedLoanId",
+                  "value": "{{associatedLoanId}}"
+                },
+                {
+                  "key": "gstNumber",
+                  "value": "{{gstin}}"
+                },
+                {
+                  "key": "dataSource",
+                  "value": "{{dataSource}}"
+                },
+                {
+                  "key": "apiName",
+                  "value": "/taxpayerapi/v1/gstr2b"
+                },
+                {
+                  "key": "fromDate",
+                  "value": "2026-06-01T00:00:00.000Z"
+                },
+                {
+                  "key": "toDate",
+                  "value": "2026-06-30T23:59:59.999Z"
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

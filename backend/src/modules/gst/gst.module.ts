@@ -10,6 +10,7 @@ import { JobTask } from '../../entities/job-task.entity';
 import { PrimaryGstAggregation } from '../../entities/primary-gst-aggregation.entity';
 import { SecondaryGstAggregation } from '../../entities/secondary-gst-aggregation.entity';
 import { TaxpayerAuthSession } from '../../entities/taxpayer-auth-session.entity';
+import { ApiRequestLog } from '../../entities/api-request-log.entity';
 import { FileStorageService } from '../shared/services/file-storage.service';
 import { getRabbitMQClientConfig, QUEUES } from '../../config/rabbitmq.config';
 import { GstConsumer } from './gst.consumer';
@@ -19,10 +20,23 @@ import { GstComplianceService } from './services/gst-compliance.service';
 import { GstAggregationService } from './services/gst-aggregation.service';
 import { GstTaxpayerAuthService } from './services/gst-taxpayer-auth.service';
 import { GstTaxpayerReturnsService } from './services/gst-taxpayer-returns.service';
+import { ApiRequestLogService } from './services/api-request-log.service';
 import {
   GstComplianceRecord,
   GstComplianceSchema,
 } from './schemas/gst-compliance.schema';
+import {
+  Gstr1ComplianceRecord,
+  Gstr1ComplianceSchema,
+} from './schemas/gst-gstr1-compliance.schema';
+import {
+  Gstr2bComplianceRecord,
+  Gstr2bComplianceSchema,
+} from './schemas/gst-gstr2b-compliance.schema';
+import {
+  Gstr3bComplianceRecord,
+  Gstr3bComplianceSchema,
+} from './schemas/gst-gstr3b-compliance.schema';
 
 const enableRabbitMQ = process.env.ENABLE_RABBITMQ === 'true';
 const enableMongo = process.env.ENABLE_MONGO === 'true';
@@ -35,11 +49,15 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
       PrimaryGstAggregation,
       SecondaryGstAggregation,
       TaxpayerAuthSession,
+      ApiRequestLog,
     ]),
     ...(enableMongo
       ? [
           MongooseModule.forFeature([
             { name: GstComplianceRecord.name, schema: GstComplianceSchema },
+            { name: Gstr1ComplianceRecord.name, schema: Gstr1ComplianceSchema },
+            { name: Gstr2bComplianceRecord.name, schema: Gstr2bComplianceSchema },
+            { name: Gstr3bComplianceRecord.name, schema: Gstr3bComplianceSchema },
           ]),
         ]
       : []),
@@ -81,6 +99,7 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
     GstAggregationService,
     GstTaxpayerAuthService,
     GstTaxpayerReturnsService,
+    ApiRequestLogService,
   ],
   exports: [GstService],
 })
