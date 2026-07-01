@@ -9,7 +9,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import axios from 'axios';
-import { DataSource, LessThanOrEqual, Repository } from 'typeorm';
+import { DataSource, IsNull, LessThanOrEqual, Repository } from 'typeorm';
 import {
   TaxpayerAuthSession,
   TaxpayerAuthState,
@@ -76,7 +76,7 @@ export class GstTaxpayerAuthService implements OnModuleInit, OnModuleDestroy {
         message: 'OTP generation request submitted successfully.',
         username: session.username,
         gstin: session.gstin,
-        state: 'OTP_REQUIRED',
+        // state: 'OTP_REQUIRED',
         sandboxResponse: response,
       };
     } catch (err) {
@@ -115,16 +115,26 @@ export class GstTaxpayerAuthService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  async verifyOtp(identity: TaxpayerIdentity): Promise<Record<string, any>> {
+  async verifyOtp(
+    identity: TaxpayerIdentity & { otp: string },
+  ): Promise<Record<string, any>> {
     const normalized = this.normalizeIdentity(identity);
     const session = await this.findSessionOrThrow(normalized);
-
-    if (!session.otpValue || !session.otpExpiresAt) {
-      throw new BadRequestException(
-        'No OTP submitted for this username/gstin. Submit OTP first.',
-      );
+    const otpValue = String(identity.otp ?? '').trim();
+    if (!otpValue) {
+      throw new BadRequestException('"otp" is required in verify request.');
     }
-    if (session.otpExpiresAt.getTime() <= Date.now()) {
+
+    const now = new Date();
+    const otpExpiresAt = new Date(now.getTime() + this.otpTtlMinutes * 60_000);
+    await this.updateSession(session, {
+      state: 'OTP_SUBMITTED',
+      otpValue,
+      otpSubmittedAt: now,
+      otpExpiresAt,
+      lastError: null,
+    });
+    if (otpExpiresAt.getTime() <= Date.now()) {
       await this.updateSession(session, {
         state: 'OTP_REQUIRED',
         otpValue: null,
@@ -144,7 +154,7 @@ export class GstTaxpayerAuthService implements OnModuleInit, OnModuleDestroy {
       const body: Record<string, any> = {
         username: normalized.username,
         gstin: normalized.gstin,
-        otp: session.otpValue,
+        otp: otpValue,
       };
 
       const response = await this.postToSandbox(
@@ -209,6 +219,7 @@ export class GstTaxpayerAuthService implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException(
         'Taxpayer session is not authenticated. Complete OTP verification first.',
       );
+   
     }
 
     if (refreshBeforeUse) {
@@ -476,7 +487,13 @@ export class GstTaxpayerAuthService implements OnModuleInit, OnModuleDestroy {
 
   private startRefreshScheduler(): void {
     this.intervalRef = setInterval(() => {
-      void this.refreshSessionsDue();
+      void this.refreshSessionsDue().catch((err) => {
+        this.logger.error(
+          `Auto-refresh scheduler failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
     }, this.refreshIntervalMs);
   }
 
@@ -487,10 +504,16 @@ export class GstTaxpayerAuthService implements OnModuleInit, OnModuleDestroy {
     try {
       const cutoff = new Date(Date.now() + this.refreshLeadMinutes * 60_000);
       const dueSessions = await this.sessionRepo.find({
-        where: {
-          state: 'AUTHENTICATED' as TaxpayerAuthState,
-          tokenExpiresAt: LessThanOrEqual(cutoff),
-        },
+        where: [
+          {
+            state: 'AUTHENTICATED' as TaxpayerAuthState,
+            tokenExpiresAt: LessThanOrEqual(cutoff),
+          },
+          {
+            state: 'AUTHENTICATED' as TaxpayerAuthState,
+            tokenExpiresAt: IsNull(),
+          },
+        ],
       });
 
       for (const session of dueSessions) {

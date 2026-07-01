@@ -142,6 +142,111 @@ export class GstController {
   }
 
   /**
+   * POST /gst/verify-and-fetch/gstr-1
+   * body:
+   *   - year (required)
+   *   - month (required)
+   *   - tableName (optional)
+   *   - username (optional; defaults to GSTIN per row)
+   */
+  @Post('verify-and-fetch/gstr-1')
+  @HttpCode(HttpStatus.ACCEPTED)
+  async verifyAndFetchGstr1(
+    @Body('year') year: number,
+    @Body('month') month: number,
+    @Body('tableName') tableName?: string,
+    @Body('username') username?: string,
+  ) {
+    const job = await this.gstComplianceService.startGstr1VerifyAndFetch(
+      Number(year),
+      Number(month),
+      tableName,
+      username,
+    );
+    return {
+      message: 'GSTR-1 verify & fetch job accepted for background processing.',
+      jobId: job.id,
+      status: job.status,
+      checkStatusUrl: `/gst/status/${job.id}`,
+    };
+  }
+
+  /**
+   * POST /gst/verify-and-fetch/gstr-1a
+   */
+  @Post('verify-and-fetch/gstr-1a')
+  @HttpCode(HttpStatus.ACCEPTED)
+  async verifyAndFetchGstr1a(
+    @Body('year') year: number,
+    @Body('month') month: number,
+    @Body('tableName') tableName?: string,
+    @Body('username') username?: string,
+  ) {
+    const job = await this.gstComplianceService.startGstr1aVerifyAndFetch(
+      Number(year),
+      Number(month),
+      tableName,
+      username,
+    );
+    return {
+      message: 'GSTR-1A verify & fetch job accepted for background processing.',
+      jobId: job.id,
+      status: job.status,
+      checkStatusUrl: `/gst/status/${job.id}`,
+    };
+  }
+
+  /**
+   * POST /gst/verify-and-fetch/gstr-2b
+   */
+  @Post('verify-and-fetch/gstr-2b')
+  @HttpCode(HttpStatus.ACCEPTED)
+  async verifyAndFetchGstr2b(
+    @Body('year') year: number,
+    @Body('month') month: number,
+    @Body('tableName') tableName?: string,
+    @Body('username') username?: string,
+  ) {
+    const job = await this.gstComplianceService.startGstr2bVerifyAndFetch(
+      Number(year),
+      Number(month),
+      tableName,
+      username,
+    );
+    return {
+      message: 'GSTR-2B verify & fetch job accepted for background processing.',
+      jobId: job.id,
+      status: job.status,
+      checkStatusUrl: `/gst/status/${job.id}`,
+    };
+  }
+
+  /**
+   * POST /gst/verify-and-fetch/gstr-3b
+   */
+  @Post('verify-and-fetch/gstr-3b')
+  @HttpCode(HttpStatus.ACCEPTED)
+  async verifyAndFetchGstr3b(
+    @Body('year') year: number,
+    @Body('month') month: number,
+    @Body('tableName') tableName?: string,
+    @Body('username') username?: string,
+  ) {
+    const job = await this.gstComplianceService.startGstr3bVerifyAndFetch(
+      Number(year),
+      Number(month),
+      tableName,
+      username,
+    );
+    return {
+      message: 'GSTR-3B verify & fetch job accepted for background processing.',
+      jobId: job.id,
+      status: job.status,
+      checkStatusUrl: `/gst/status/${job.id}`,
+    };
+  }
+
+  /**
    * POST /gst/taxpayer/otp/generate
    * Triggers OTP generation on Sandbox for a taxpayer session.
    */
@@ -180,8 +285,12 @@ export class GstController {
   async verifyTaxpayerOtp(
     @Body('username') username: string,
     @Body('gstin') gstin: string,
+    @Body('otp') otp: string,
   ) {
-    const data = await this.gstTaxpayerAuthService.verifyOtp({ username, gstin });
+    if (!String(otp ?? '').trim()) {
+      throw new BadRequestException('"otp" is required in verify request.');
+    }
+    const data = await this.gstTaxpayerAuthService.verifyOtp({ username, gstin, otp });
     return this.successResponse('taxpayer-auth.verify-otp', data);
   }
 
@@ -284,6 +393,28 @@ export class GstController {
   }
 
   /**
+   * GET /gst/taxpayer/gstr-1a/:year/:month?username=...&gstin=...
+   */
+  @Get('taxpayer/gstr-1a/:year/:month')
+  async fetchTaxpayerGstr1a(
+    @Param('year') year: string,
+    @Param('month') month: string,
+    @Query('username') username: string,
+    @Query('gstin') gstin: string,
+    @Query('associatedLoanId') associatedLoanId?: string,
+    @Query('customerId') customerId?: string,
+    @Query('dataSource') dataSource?: string,
+  ) {
+    const data = await this.gstTaxpayerReturnsService.fetchGstr1a(
+      { username, gstin },
+      Number(year),
+      Number(month),
+      { associatedLoanId, customerId, dataSource },
+    );
+    return this.successResponse('taxpayer-returns.gstr-1a', data);
+  }
+
+  /**
    * GET /gst/api-logs
    * Optional filters:
    * gstrType, status, customerId, associatedLoanId, gstNumber,
@@ -291,7 +422,7 @@ export class GstController {
    */
   @Get('api-logs')
   async getApiLogs(
-    @Query('gstrType') gstrType?: 'GSTR-1' | 'GSTR-2B' | 'GSTR-3B',
+    @Query('gstrType') gstrType?: 'GSTR-1' | 'GSTR-1A' | 'GSTR-2B' | 'GSTR-3B',
     @Query('status') status?: string,
     @Query('customerId') customerId?: string,
     @Query('associatedLoanId') associatedLoanId?: string,
@@ -303,12 +434,12 @@ export class GstController {
     @Query('limit') limitRaw?: string,
     @Query('offset') offsetRaw?: string,
   ) {
-    const allowedGstrTypes = new Set(['GSTR-1', 'GSTR-2B', 'GSTR-3B']);
+    const allowedGstrTypes = new Set(['GSTR-1', 'GSTR-1A', 'GSTR-2B', 'GSTR-3B']);
     const allowedStatuses = new Set(['PROCESSING', 'SUCCESS', 'FAILED']);
 
     if (gstrType && !allowedGstrTypes.has(gstrType)) {
       throw new BadRequestException(
-        'Invalid gstrType. Allowed values: GSTR-1, GSTR-2B, GSTR-3B.',
+        'Invalid gstrType. Allowed values: GSTR-1, GSTR-1A, GSTR-2B, GSTR-3B.',
       );
     }
     if (status && !allowedStatuses.has(status)) {

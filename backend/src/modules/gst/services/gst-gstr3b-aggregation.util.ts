@@ -185,8 +185,30 @@ function computeSummary(
   let sgstCashPaidAmount = 0;
   let igstCashPaidAmount = 0;
 
+  // Structured extraction fallback for real Sandbox 3B payload shape.
+  let structuredTaxableSuppliesNormalAmount = 0;
+  let structuredZeroRatedNilExemptAmount = 0;
+  let structuredReverseChargeSuppliesAmount = 0;
+  let structuredTaxableSuppliesAmount = 0;
+  let structuredExemptAmount = 0;
+  let structuredInterStatePurchaseAmount = 0;
+  let structuredIntraStatePurchaseAmount = 0;
+  let structuredNonGstPurchaseAmount = 0;
+  let structuredInputTaxCreditCgstAmount = 0;
+  let structuredInputTaxCreditSgstAmount = 0;
+  let structuredInputTaxCreditIgstAmount = 0;
+  let structuredInputTaxCreditReversedAmount = 0;
+  let structuredInputTaxCreditIneligibleAmount = 0;
+  let structuredCgstItcUtilisedAmount = 0;
+  let structuredSgstItcUtilisedAmount = 0;
+  let structuredIgstItcUtilisedAmount = 0;
+  let structuredCgstCashPaidAmount = 0;
+  let structuredSgstCashPaidAmount = 0;
+  let structuredIgstCashPaidAmount = 0;
+
   for (const record of records) {
     const payload = (record.gstr3bResponse ?? record) as Record<string, any>;
+    const body = extractStructuredBody(payload);
     const allFacts = collectNumericFacts(payload);
 
     taxableSuppliesNormalAmount += sumForAliases(
@@ -312,7 +334,126 @@ function computeSummary(
     igstCashPaidAmount +=
       sumForAliases(allFacts, 'igst_cash_paid_amount', 'igstCashPaidAmount') +
       sumCashByTaxType(allFacts, 'IGST');
+
+    // Structured parsing for payloads like:
+    // data.data.sup_details / data.data.itc_elg / data.data.tx_pmt.
+    const supDetails = asRecord(body.sup_details);
+    const osupDet = asRecord(supDetails.osup_det);
+    const osupZero = asRecord(supDetails.osup_zero);
+    const osupNilExmp = asRecord(supDetails.osup_nil_exmp);
+    const osupNongst = asRecord(supDetails.osup_nongst);
+    const isupRev = asRecord(supDetails.isup_rev);
+
+    const structuredTaxable = pickNumber(osupDet, 'txval');
+    const structuredZero = pickNumber(osupZero, 'txval');
+    const structuredNil = pickNumber(osupNilExmp, 'txval');
+    const structuredNonGst = pickNumber(osupNongst, 'txval');
+    const structuredReverse = pickNumber(isupRev, 'txval');
+
+    structuredTaxableSuppliesNormalAmount += structuredTaxable;
+    structuredZeroRatedNilExemptAmount += structuredZero + structuredNil + structuredNonGst;
+    structuredReverseChargeSuppliesAmount += structuredReverse;
+    structuredTaxableSuppliesAmount += structuredTaxable;
+    structuredExemptAmount += structuredZero + structuredNil + structuredNonGst;
+    structuredNonGstPurchaseAmount += structuredNonGst;
+
+    const interSup = asRecord(body.inter_sup);
+    structuredInterStatePurchaseAmount += sumTxValFromArray(interSup.unreg_details);
+    structuredInterStatePurchaseAmount += sumTxValFromArray(interSup.comp_details);
+    structuredInterStatePurchaseAmount += sumTxValFromArray(interSup.uin_details);
+
+    const itcElg = asRecord(body.itc_elg);
+    const itcAvl = asArrayOfRecords(itcElg.itc_avl);
+    const itcRev = asArrayOfRecords(itcElg.itc_rev);
+    const itcInelg = asArrayOfRecords(itcElg.itc_inelg);
+
+    structuredInputTaxCreditCgstAmount += sumTaxAmounts(itcAvl, 'camt');
+    structuredInputTaxCreditSgstAmount += sumTaxAmounts(itcAvl, 'samt');
+    structuredInputTaxCreditIgstAmount += sumTaxAmounts(itcAvl, 'iamt');
+    structuredInputTaxCreditReversedAmount +=
+      sumTaxAmounts(itcRev, 'camt') +
+      sumTaxAmounts(itcRev, 'samt') +
+      sumTaxAmounts(itcRev, 'iamt');
+    structuredInputTaxCreditIneligibleAmount +=
+      sumTaxAmounts(itcInelg, 'camt') +
+      sumTaxAmounts(itcInelg, 'samt') +
+      sumTaxAmounts(itcInelg, 'iamt');
+
+    const txPmt = asRecord(body.tx_pmt);
+    const pditc = asRecord(txPmt.pditc);
+    structuredCgstItcUtilisedAmount += pickNumber(pditc, 'c_pdi');
+    structuredSgstItcUtilisedAmount += pickNumber(pditc, 's_pdi');
+    structuredIgstItcUtilisedAmount += pickNumber(pditc, 'i_pdi');
+
+    const pdcash = asArrayOfRecords(txPmt.pdcash);
+    for (const row of pdcash) {
+      structuredCgstCashPaidAmount += pickNumber(row, 'cpd');
+      structuredSgstCashPaidAmount += pickNumber(row, 'spd');
+      structuredIgstCashPaidAmount += pickNumber(row, 'ipd');
+    }
   }
+
+  const choose = (aliasValue: number, structuredValue: number): number =>
+    aliasValue !== 0 ? aliasValue : structuredValue;
+
+  taxableSuppliesNormalAmount = choose(
+    taxableSuppliesNormalAmount,
+    structuredTaxableSuppliesNormalAmount,
+  );
+  zeroRatedNilExemptAmount = choose(
+    zeroRatedNilExemptAmount,
+    structuredZeroRatedNilExemptAmount,
+  );
+  reverseChargeSuppliesAmount = choose(
+    reverseChargeSuppliesAmount,
+    structuredReverseChargeSuppliesAmount,
+  );
+  taxableSuppliesAmount = choose(taxableSuppliesAmount, structuredTaxableSuppliesAmount);
+  exemptAmount = choose(exemptAmount, structuredExemptAmount);
+  interStatePurchaseAmount = choose(
+    interStatePurchaseAmount,
+    structuredInterStatePurchaseAmount,
+  );
+  intraStatePurchaseAmount = choose(
+    intraStatePurchaseAmount,
+    structuredIntraStatePurchaseAmount,
+  );
+  nonGstPurchaseAmount = choose(nonGstPurchaseAmount, structuredNonGstPurchaseAmount);
+  inputTaxCreditCgstAmount = choose(
+    inputTaxCreditCgstAmount,
+    structuredInputTaxCreditCgstAmount,
+  );
+  inputTaxCreditSgstAmount = choose(
+    inputTaxCreditSgstAmount,
+    structuredInputTaxCreditSgstAmount,
+  );
+  inputTaxCreditIgstAmount = choose(
+    inputTaxCreditIgstAmount,
+    structuredInputTaxCreditIgstAmount,
+  );
+  inputTaxCreditReversedAmount = choose(
+    inputTaxCreditReversedAmount,
+    structuredInputTaxCreditReversedAmount,
+  );
+  inputTaxCreditIneligibleAmount = choose(
+    inputTaxCreditIneligibleAmount,
+    structuredInputTaxCreditIneligibleAmount,
+  );
+  cgstItcUtilisedAmount = choose(
+    cgstItcUtilisedAmount,
+    structuredCgstItcUtilisedAmount,
+  );
+  sgstItcUtilisedAmount = choose(
+    sgstItcUtilisedAmount,
+    structuredSgstItcUtilisedAmount,
+  );
+  igstItcUtilisedAmount = choose(
+    igstItcUtilisedAmount,
+    structuredIgstItcUtilisedAmount,
+  );
+  cgstCashPaidAmount = choose(cgstCashPaidAmount, structuredCgstCashPaidAmount);
+  sgstCashPaidAmount = choose(sgstCashPaidAmount, structuredSgstCashPaidAmount);
+  igstCashPaidAmount = choose(igstCashPaidAmount, structuredIgstCashPaidAmount);
 
   const totalTurnover =
     taxableSuppliesNormalAmount + zeroRatedNilExemptAmount + reverseChargeSuppliesAmount;
@@ -456,6 +597,20 @@ function pickString(obj: Record<string, any>, ...keys: string[]): string | null 
   return null;
 }
 
+function pickNumber(obj: Record<string, any>, ...keys: string[]): number {
+  for (const key of keys) {
+    const value = obj[key];
+    if (value === null || value === undefined || value === '') {
+      continue;
+    }
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) {
+      return numeric;
+    }
+  }
+  return 0;
+}
+
 function normalizeTaxType(raw: string | null): 'CGST' | 'SGST' | 'IGST' | null {
   if (!raw) return null;
   const upper = raw.trim().toUpperCase();
@@ -467,4 +622,30 @@ function normalizeTaxType(raw: string | null): 'CGST' | 'SGST' | 'IGST' | null {
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+function asRecord(value: unknown): Record<string, any> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, any>;
+  }
+  return {};
+}
+
+function asArrayOfRecords(value: unknown): Array<Record<string, any>> {
+  if (!Array.isArray(value)) return [];
+  return value.filter((v) => v && typeof v === 'object') as Array<Record<string, any>>;
+}
+
+function extractStructuredBody(payload: Record<string, any>): Record<string, any> {
+  const level1 = asRecord(payload.data);
+  const level2 = asRecord(level1.data);
+  return Object.keys(level2).length > 0 ? level2 : level1;
+}
+
+function sumTxValFromArray(value: unknown): number {
+  return asArrayOfRecords(value).reduce((sum, row) => sum + pickNumber(row, 'txval'), 0);
+}
+
+function sumTaxAmounts(rows: Array<Record<string, any>>, key: string): number {
+  return rows.reduce((sum, row) => sum + pickNumber(row, key), 0);
 }

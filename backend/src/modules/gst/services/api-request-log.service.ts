@@ -8,7 +8,14 @@ import {
 
 export interface ApiLogContext {
   gstrFamily: 'GSTIN' | 'GSTR';
-  gstrType: 'GST-RETURN' | 'GSTR-1' | 'GSTR-2' | 'GSTR-3' | 'GSTR-2B' | 'GSTR-3B';
+  gstrType:
+    | 'GST-RETURN'
+    | 'GSTR-1'
+    | 'GSTR-1A'
+    | 'GSTR-2'
+    | 'GSTR-3'
+    | 'GSTR-2B'
+    | 'GSTR-3B';
   apiName: string;
   associatedLoanId?: string | null;
   customerId?: string | null;
@@ -21,6 +28,7 @@ export interface ApiLogQuery {
   gstrType?:
     | 'GST-RETURN'
     | 'GSTR-1'
+    | 'GSTR-1A'
     | 'GSTR-2'
     | 'GSTR-3'
     | 'GSTR-2B'
@@ -148,6 +156,7 @@ export class ApiRequestLogService implements OnModuleInit {
         associated_loan_id text NULL,
         customer_id text NULL,
         gst_number text NULL,
+        
         data_source text NULL,
         response_status_code int NULL,
         error_message text NULL,

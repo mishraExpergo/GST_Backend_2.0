@@ -3,12 +3,18 @@ import {
   BadRequestException,
   Injectable,
   Logger,
+  Optional,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import { GstTaxpayerAuthService } from './gst-taxpayer-auth.service';
 import { ApiRequestLogService } from './api-request-log.service';
+import { GstService } from '../gst.service';
+import { GstAggregationService } from './gst-aggregation.service';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { Gstr1aComplianceRecord } from '../schemas/gst-gstr1a-compliance.schema';
 
 interface TaxpayerIdentity {
   username: string;
@@ -19,7 +25,13 @@ interface RequestTrackingContext {
   associatedLoanId?: string | null;
   customerId?: string | null;
   dataSource?: string | null;
+  sourceTable?: string | null;
+  skipAutoAggregationTrigger?: boolean;
 }
+
+const VERIFY_GSTR_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR';
+const VERIFY_2B_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_2B';
+const VERIFY_3B_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_3B';
 
 @Injectable()
 export class GstTaxpayerReturnsService {
@@ -30,6 +42,11 @@ export class GstTaxpayerReturnsService {
     private readonly config: ConfigService,
     private readonly taxpayerAuthService: GstTaxpayerAuthService,
     private readonly apiRequestLogService: ApiRequestLogService,
+    private readonly gstService: GstService,
+    private readonly gstAggregationService: GstAggregationService,
+    @Optional()
+    @InjectModel(Gstr1aComplianceRecord.name)
+    private readonly gstr1aComplianceModel?: Model<Gstr1aComplianceRecord>,
   ) {}
 
   async fetchGstr1(
@@ -95,6 +112,27 @@ export class GstTaxpayerReturnsService {
     );
   }
 
+  async fetchGstr1a(
+    identity: TaxpayerIdentity,
+    year: number,
+    month: number,
+    tracking: RequestTrackingContext = {},
+  ): Promise<Record<string, any>> {
+    const { normalizedIdentity, yearNum, monthNum } = this.validateInputs(
+      identity,
+      year,
+      month,
+    );
+    return this.fetchReturn(
+      normalizedIdentity,
+      `/gst/compliance/tax-payer/gstrs/gstr-1a/${yearNum}/${monthNum}`,
+      'GSTR-1A',
+      yearNum,
+      monthNum,
+      tracking,
+    );
+  }
+
   private get baseUrl(): string {
     return this.config
       .getOrThrow<string>('GST_API_BASE_URL')
@@ -104,7 +142,7 @@ export class GstTaxpayerReturnsService {
   private async fetchReturn(
     identity: TaxpayerIdentity,
     path: string,
-    returnType: 'GSTR-1' | 'GSTR-2B' | 'GSTR-3B',
+    returnType: 'GSTR-1' | 'GSTR-1A' | 'GSTR-2B' | 'GSTR-3B',
     year: number,
     month: number,
     tracking: RequestTrackingContext,
@@ -206,6 +244,25 @@ export class GstTaxpayerReturnsService {
         url,
       });
 
+      await this.storeGstr1aResponseIfApplicable(
+        returnType,
+        identity,
+        year,
+        month,
+        tracking,
+        response.data ?? {},
+      );
+
+      if (!tracking.skipAutoAggregationTrigger) {
+        await this.triggerAggregationForReturnType(
+          returnType,
+          identity,
+          year,
+          month,
+          tracking,
+        );
+      }
+
       return {
         message: `${returnType} fetched successfully.`,
         username: identity.username,
@@ -253,5 +310,128 @@ export class GstTaxpayerReturnsService {
 
   private delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private async storeGstr1aResponseIfApplicable(
+    returnType: 'GSTR-1' | 'GSTR-1A' | 'GSTR-2B' | 'GSTR-3B',
+    identity: TaxpayerIdentity,
+    year: number,
+    month: number,
+    tracking: RequestTrackingContext,
+    payload: Record<string, any>,
+  ): Promise<void> {
+    if (returnType !== 'GSTR-1A' || !this.gstr1aComplianceModel) {
+      return;
+    }
+
+    const loanId =
+      String(tracking.associatedLoanId ?? '').trim() ||
+      `${identity.username}:${identity.gstin}`;
+    const customerId =
+      String(tracking.customerId ?? '').trim() || identity.username;
+    const sourceTable =
+      String(tracking.sourceTable ?? '').trim() ||
+      this.config.get<string>('GST_AGGREGATION_SOURCE_TABLE', 'gst_uploaded_file_data');
+
+    const gstin = identity.gstin.trim().toUpperCase();
+    const pan = gstin.length >= 12 ? gstin.substring(2, 12) : '';
+    const status = String(payload?.data?.status ?? payload?.status ?? 'FETCHED');
+
+    await this.gstr1aComplianceModel.updateOne(
+      { loanId, gstin, year, month },
+      {
+        $set: {
+          loanId,
+          customerId,
+          gstin,
+          gstNo: gstin,
+          pan,
+          year,
+          month,
+          sourceTable,
+          status,
+          gstr1aResponse: payload,
+          systemMetadata: {
+            fetchedAt: new Date().toISOString(),
+            username: identity.username,
+            dataSource: tracking.dataSource ?? 'sandbox',
+          },
+        },
+      },
+      { upsert: true },
+    );
+  }
+
+  private async triggerAggregationForReturnType(
+    returnType: 'GSTR-1' | 'GSTR-1A' | 'GSTR-2B' | 'GSTR-3B',
+    identity: TaxpayerIdentity,
+    year: number,
+    month: number,
+    tracking: RequestTrackingContext,
+  ): Promise<void> {
+    const customerId = String(tracking.customerId ?? '').trim();
+    if (!customerId) {
+      this.logger.debug(
+        `${returnType}: skipping auto-aggregation trigger because "customerId" is missing.`,
+      );
+      return;
+    }
+
+    const sourceTable =
+      String(tracking.sourceTable ?? '').trim() ||
+      this.config.get<string>('GST_AGGREGATION_SOURCE_TABLE', 'gst_uploaded_file_data');
+
+    const operationByReturnType: Record<string, string | null> = {
+      'GSTR-1': VERIFY_GSTR_OPERATION,
+      'GSTR-1A': null,
+      'GSTR-2B': VERIFY_2B_OPERATION,
+      'GSTR-3B': VERIFY_3B_OPERATION,
+    };
+    const operation = operationByReturnType[returnType];
+    if (!operation) {
+      return;
+    }
+
+    try {
+      const job = await this.gstService.createJob('API', {
+        operation,
+        sourceTable,
+        triggerSource: 'taxpayer-returns',
+        gstrType: returnType,
+        customerId,
+        associatedLoanId: tracking.associatedLoanId ?? null,
+        username: identity.username,
+        gstin: identity.gstin,
+        year,
+        month,
+      });
+
+      await this.gstService.setJobTotalChunks(job.id, 1);
+      const task = await this.gstService.createTask(job.id, {
+        tableName: sourceTable,
+        batchIndex: 0,
+        totalBatches: 1,
+        rows: [{ customer_id: customerId }],
+      });
+      await this.gstService.markTask(task.id, 'COMPLETED', {
+        result: { totalRows: 1, stored: 1 },
+      });
+      await this.gstService.setJobProgress(job.id, 1);
+      await this.gstService.finishJob(job.id, { autoAggregationTriggered: true });
+
+      if (returnType === 'GSTR-1') {
+        await this.gstAggregationService.triggerAfterGstrJob(job.id);
+      } else if (returnType === 'GSTR-2B') {
+        await this.gstAggregationService.triggerAfterGstr2bJob(job.id);
+      } else if (returnType === 'GSTR-3B') {
+        await this.gstAggregationService.triggerAfterGstr3bJob(job.id);
+      }
+    } catch (err) {
+      this.logger.error(
+        `${returnType}: auto-aggregation trigger failed for customerId=${customerId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 }

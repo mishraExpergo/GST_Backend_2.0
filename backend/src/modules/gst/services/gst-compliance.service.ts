@@ -17,6 +17,12 @@ import { GstService } from '../gst.service';
 import { GstApiService } from './gst-api.service';
 import { GstAggregationService } from './gst-aggregation.service';
 import { GstComplianceRecord } from '../schemas/gst-compliance.schema';
+import { GstTaxpayerReturnsService } from './gst-taxpayer-returns.service';
+import { Gstr1ComplianceRecord } from '../schemas/gst-gstr1-compliance.schema';
+import { Gstr2bComplianceRecord } from '../schemas/gst-gstr2b-compliance.schema';
+import { Gstr3bComplianceRecord } from '../schemas/gst-gstr3b-compliance.schema';
+import { Gstr1aComplianceRecord } from '../schemas/gst-gstr1a-compliance.schema';
+import { buildGstr1ReturnsFromResponse } from './gst-gstr1-aggregation.util';
 
 type GstEntityType = 'PRIMARY' | 'CONSIDERED_ENTITY';
 
@@ -27,6 +33,8 @@ interface SourceRow {
   pan: string | null;
   entity_type: GstEntityType;
 }
+
+type GstrReturnType = 'GSTR-1' | 'GSTR-1A' | 'GSTR-2B' | 'GSTR-3B';
 
 interface BatchResult {
   totalRows: number;
@@ -41,6 +49,11 @@ interface BatchResult {
 const DEFAULT_SOURCE_TABLE = 'gst_uploaded_file_data';
 const GSTIN_PATTERN =
   /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
+const VERIFY_FETCH_OPERATION = 'GSTIN_VERIFY_AND_FETCH';
+const VERIFY_GSTR_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR';
+const VERIFY_1A_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_1A';
+const VERIFY_2B_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_2B';
+const VERIFY_3B_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_3B';
 
 @Injectable()
 export class GstComplianceService {
@@ -50,11 +63,24 @@ export class GstComplianceService {
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly gstService: GstService,
     private readonly gstApiService: GstApiService,
+    private readonly gstTaxpayerReturnsService: GstTaxpayerReturnsService,
     private readonly gstAggregationService: GstAggregationService,
     private readonly config: ConfigService,
     @Optional()
     @InjectModel(GstComplianceRecord.name)
     private readonly complianceModel?: Model<GstComplianceRecord>,
+    @Optional()
+    @InjectModel(Gstr1ComplianceRecord.name)
+    private readonly gstr1ComplianceModel?: Model<Gstr1ComplianceRecord>,
+    @Optional()
+    @InjectModel(Gstr2bComplianceRecord.name)
+    private readonly gstr2bComplianceModel?: Model<Gstr2bComplianceRecord>,
+    @Optional()
+    @InjectModel(Gstr3bComplianceRecord.name)
+    private readonly gstr3bComplianceModel?: Model<Gstr3bComplianceRecord>,
+    @Optional()
+    @InjectModel(Gstr1aComplianceRecord.name)
+    private readonly gstr1aComplianceModel?: Model<Gstr1aComplianceRecord>,
     @Optional()
     @Inject('VERIFY_PARENT_SERVICE')
     private readonly verifyParentClient?: ClientProxy,
@@ -97,13 +123,81 @@ export class GstComplianceService {
     return job;
   }
 
+  async startGstr1VerifyAndFetch(
+    year: number,
+    month: number,
+    rawTableName?: string,
+    username?: string,
+  ): Promise<Job> {
+    return this.startReturnVerifyAndFetch(
+      'GSTR-1',
+      VERIFY_GSTR_OPERATION,
+      year,
+      month,
+      rawTableName,
+      username,
+    );
+  }
+
+  async startGstr1aVerifyAndFetch(
+    year: number,
+    month: number,
+    rawTableName?: string,
+    username?: string,
+  ): Promise<Job> {
+    return this.startReturnVerifyAndFetch(
+      'GSTR-1A',
+      VERIFY_1A_OPERATION,
+      year,
+      month,
+      rawTableName,
+      username,
+    );
+  }
+
+  async startGstr2bVerifyAndFetch(
+    year: number,
+    month: number,
+    rawTableName?: string,
+    username?: string,
+  ): Promise<Job> {
+    return this.startReturnVerifyAndFetch(
+      'GSTR-2B',
+      VERIFY_2B_OPERATION,
+      year,
+      month,
+      rawTableName,
+      username,
+    );
+  }
+
+  async startGstr3bVerifyAndFetch(
+    year: number,
+    month: number,
+    rawTableName?: string,
+    username?: string,
+  ): Promise<Job> {
+    return this.startReturnVerifyAndFetch(
+      'GSTR-3B',
+      VERIFY_3B_OPERATION,
+      year,
+      month,
+      rawTableName,
+      username,
+    );
+  }
+
   async processVerifyParent(jobId: string, tableName: string): Promise<void> {
     try {
       await this.gstService.updateJobStatus(jobId, 'PROCESSING');
+      const job = await this.gstService.getJobStatus(jobId);
+      const operation = String(job?.metadata?.operation ?? '').trim();
 
       const allRows = await this.fetchSourceRows(tableName);
       const { pending: rows, skippedExisting } =
-        await this.partitionUnprocessedRows(allRows, this.complianceModel!);
+        operation === VERIFY_FETCH_OPERATION
+          ? await this.partitionUnprocessedRows(allRows, this.complianceModel!)
+          : { pending: allRows, skippedExisting: 0 };
 
       await this.gstService.mergeJobMetadata(jobId, {
         totalSourceRows: allRows.length,
@@ -166,6 +260,14 @@ export class GstComplianceService {
     rows: SourceRow[],
   ): Promise<void> {
     await this.gstService.markTask(taskId, 'PROCESSING', { attempts: 1 });
+    const job = await this.gstService.getJobStatus(jobId);
+    const operation = String(job?.metadata?.operation ?? '').trim();
+    const returnType = String(job?.metadata?.returnType ?? '').trim() as
+      | GstrReturnType
+      | '';
+    const year = Number(job?.metadata?.year);
+    const month = Number(job?.metadata?.month);
+    const username = String(job?.metadata?.username ?? '').trim();
 
     const result: BatchResult = {
       totalRows: rows.length,
@@ -179,7 +281,19 @@ export class GstComplianceService {
 
     try {
       await this.runWithConcurrency(rows, this.concurrency, async (row) => {
-        await this.processRow(row, tableName, result);
+        if (operation === VERIFY_FETCH_OPERATION) {
+          await this.processRow(row, tableName, result);
+          return;
+        }
+        await this.processReturnRow(
+          row,
+          tableName,
+          result,
+          returnType,
+          year,
+          month,
+          username,
+        );
       });
 
       await this.gstService.markTask(taskId, 'COMPLETED', { result });
@@ -196,7 +310,7 @@ export class GstComplianceService {
         await this.gstService.incrementCompletedChunks(jobId);
       if (justCompleted) {
         await this.finalizeJob(jobId);
-        void this.maybeTriggerComplianceAggregation(jobId);
+        void this.maybeTriggerAggregation(jobId);
       }
     }
   }
@@ -262,6 +376,229 @@ export class GstComplianceService {
     }
   }
 
+  private async processReturnRow(
+    row: SourceRow,
+    tableName: string,
+    result: BatchResult,
+    returnType: GstrReturnType | '',
+    year: number,
+    month: number,
+    usernameFromJob: string,
+  ): Promise<void> {
+    if (!returnType) {
+      result.failed++;
+      return;
+    }
+    if (!Number.isInteger(year) || !Number.isInteger(month)) {
+      result.failed++;
+      return;
+    }
+
+    const gstin = (row.gst_no ?? '').trim().toUpperCase();
+    if (!gstin) {
+      result.skippedNoGstin++;
+      return;
+    }
+    if (!this.isValidGstin(gstin)) {
+      result.skippedInvalidGstin++;
+      await this.markRowStatus(tableName, row.loan_id, 'INVALID_GSTIN');
+      return;
+    }
+
+    const username = usernameFromJob || gstin;
+    try {
+      let response: Record<string, any>;
+      const tracking = {
+        associatedLoanId: row.loan_id,
+        customerId: row.customer_id ?? null,
+        dataSource: 'sandbox',
+        sourceTable: tableName,
+        skipAutoAggregationTrigger: true,
+      };
+
+      if (returnType === 'GSTR-1') {
+        response = await this.gstTaxpayerReturnsService.fetchGstr1(
+          { username, gstin },
+          year,
+          month,
+          tracking,
+        );
+      } else if (returnType === 'GSTR-1A') {
+        response = await this.gstTaxpayerReturnsService.fetchGstr1a(
+          { username, gstin },
+          year,
+          month,
+          tracking,
+        );
+      } else if (returnType === 'GSTR-2B') {
+        response = await this.gstTaxpayerReturnsService.fetchGstr2b(
+          { username, gstin },
+          year,
+          month,
+          tracking,
+        );
+      } else {
+        response = await this.gstTaxpayerReturnsService.fetchGstr3b(
+          { username, gstin },
+          year,
+          month,
+          tracking,
+        );
+      }
+
+      await this.persistReturnResponse(
+        returnType,
+        row,
+        tableName,
+        year,
+        month,
+        username,
+        response.data ?? {},
+      );
+      result.verified++;
+      result.stored++;
+      await this.markRowStatus(tableName, row.loan_id, 'FETCHED');
+    } catch (err) {
+      result.failed++;
+      this.logger.error(
+        `Failed ${returnType} fetch for loanId=${row.loan_id} gstin=${gstin}: ${(err as Error).message}`,
+      );
+      await this.markRowStatus(tableName, row.loan_id, 'FAILED');
+    }
+  }
+
+  private async persistReturnResponse(
+    returnType: GstrReturnType,
+    row: SourceRow,
+    tableName: string,
+    year: number,
+    month: number,
+    username: string,
+    payload: Record<string, any>,
+  ): Promise<void> {
+    const customerId = row.customer_id ?? null;
+    const gstin = (row.gst_no ?? '').trim().toUpperCase();
+    const pan = (row.pan ?? '').trim().toUpperCase() || gstin.substring(2, 12);
+    const legalName = String(payload?.data?.data?.lgnm ?? payload?.data?.lgnm ?? '');
+    const status = String(
+      payload?.data?.data?.status ??
+        payload?.data?.data?.sts ??
+        payload?.data?.status ??
+        'FETCHED',
+    );
+
+    if (returnType === 'GSTR-1' && this.gstr1ComplianceModel) {
+      await this.gstr1ComplianceModel.updateOne(
+        { loanId: row.loan_id, gstin, financialYear: String(year) },
+        {
+          $set: {
+            loanId: row.loan_id,
+            customerId,
+            entityType: row.entity_type,
+            gstin,
+            gstNo: gstin,
+            pan,
+            financialYear: String(year),
+            sourceTable: tableName,
+            legalName,
+            status,
+            returnType: 'GSTR-1',
+            returns: buildGstr1ReturnsFromResponse(payload),
+            gstrResponse: payload,
+            systemMetadata: {
+              fetchedAt: new Date().toISOString(),
+              month,
+              username,
+            },
+          },
+        },
+        { upsert: true },
+      );
+      return;
+    }
+
+    if (returnType === 'GSTR-2B' && this.gstr2bComplianceModel) {
+      await this.gstr2bComplianceModel.updateOne(
+        { loanId: row.loan_id, gstin, year, month },
+        {
+          $set: {
+            loanId: row.loan_id,
+            customerId,
+            entityType: row.entity_type,
+            gstin,
+            gstNo: gstin,
+            pan,
+            year,
+            month,
+            sourceTable: tableName,
+            legalName,
+            status,
+            gstr2bResponse: payload,
+            systemMetadata: {
+              fetchedAt: new Date().toISOString(),
+              username,
+            },
+          },
+        },
+        { upsert: true },
+      );
+      return;
+    }
+
+    if (returnType === 'GSTR-3B' && this.gstr3bComplianceModel) {
+      await this.gstr3bComplianceModel.updateOne(
+        { loanId: row.loan_id, gstin, year, month },
+        {
+          $set: {
+            loanId: row.loan_id,
+            customerId,
+            entityType: row.entity_type,
+            gstin,
+            gstNo: gstin,
+            pan,
+            year,
+            month,
+            sourceTable: tableName,
+            legalName,
+            status,
+            gstr3bResponse: payload,
+            systemMetadata: {
+              fetchedAt: new Date().toISOString(),
+              username,
+            },
+          },
+        },
+        { upsert: true },
+      );
+      return;
+    }
+
+    if (returnType === 'GSTR-1A' && this.gstr1aComplianceModel) {
+      await this.gstr1aComplianceModel.updateOne(
+        { loanId: row.loan_id, gstin, year, month },
+        {
+          $set: {
+            loanId: row.loan_id,
+            customerId,
+            gstin,
+            gstNo: gstin,
+            pan,
+            year,
+            month,
+            sourceTable: tableName,
+            status,
+            gstr1aResponse: payload,
+            systemMetadata: {
+              fetchedAt: new Date().toISOString(),
+              username,
+            },
+          },
+        },
+        { upsert: true },
+      );
+    }
+  }
+
   private async finalizeJob(jobId: string): Promise<void> {
     const tasks = await this.gstService.getJobTasks(jobId);
     const summary: BatchResult = {
@@ -289,12 +626,29 @@ export class GstComplianceService {
     await this.gstService.finishJob(jobId, summary);
   }
 
-  private async maybeTriggerComplianceAggregation(jobId: string): Promise<void> {
+  private async maybeTriggerAggregation(jobId: string): Promise<void> {
     try {
-      await this.gstAggregationService.triggerAfterVerifyFetchJob(jobId);
+      const job = await this.gstService.getJobStatus(jobId);
+      const operation = String(job?.metadata?.operation ?? '').trim();
+
+      if (operation === VERIFY_FETCH_OPERATION) {
+        await this.gstAggregationService.triggerAfterVerifyFetchJob(jobId);
+        return;
+      }
+      if (operation === VERIFY_GSTR_OPERATION) {
+        await this.gstAggregationService.triggerAfterGstrJob(jobId);
+        return;
+      }
+      if (operation === VERIFY_2B_OPERATION) {
+        await this.gstAggregationService.triggerAfterGstr2bJob(jobId);
+        return;
+      }
+      if (operation === VERIFY_3B_OPERATION) {
+        await this.gstAggregationService.triggerAfterGstr3bJob(jobId);
+      }
     } catch (err) {
       this.logger.error(
-        `Compliance aggregation trigger failed for job ${jobId}: ${(err as Error).message}`,
+        `Aggregation trigger failed for job ${jobId}: ${(err as Error).message}`,
       );
     }
   }
@@ -410,6 +764,56 @@ export class GstComplianceService {
       }
     });
     await Promise.all(runners);
+  }
+
+  private async startReturnVerifyAndFetch(
+    returnType: GstrReturnType,
+    operation: string,
+    year: number,
+    month: number,
+    rawTableName?: string,
+    username?: string,
+  ): Promise<Job> {
+    if (!this.complianceModel) {
+      throw new ServiceUnavailableException(
+        'MongoDB is not enabled. Set ENABLE_MONGO=true and configure MONGO_URI to store GST compliance data.',
+      );
+    }
+
+    const tableName = this.sanitizeTableName(rawTableName);
+    const yearNum = Number(year);
+    const monthNum = Number(month);
+    if (!Number.isInteger(yearNum) || yearNum < 2017 || yearNum > 2100) {
+      throw new BadRequestException(
+        `Invalid "year" "${year}". Expected a 4-digit year (e.g. 2024).`,
+      );
+    }
+    if (!Number.isInteger(monthNum) || monthNum < 1 || monthNum > 12) {
+      throw new BadRequestException(
+        `Invalid "month" "${month}". Expected a number between 1 and 12.`,
+      );
+    }
+
+    const normalizedUsername = String(username ?? '').trim() || null;
+    const job = await this.gstService.createJob('API', {
+      operation,
+      sourceTable: tableName,
+      returnType,
+      year: yearNum,
+      month: monthNum,
+      username: normalizedUsername,
+    });
+
+    if (this.verifyParentClient) {
+      this.verifyParentClient.emit('verify_parent', {
+        jobId: job.id,
+        tableName,
+      });
+    } else {
+      void this.processVerifyParent(job.id, tableName);
+    }
+
+    return job;
   }
 
   private chunk<T>(items: T[], size: number): T[][] {
