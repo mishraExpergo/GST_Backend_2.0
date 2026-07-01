@@ -64,6 +64,8 @@ const GSTIN_PATTERN =
 @Injectable()
 export class GstComplianceService {
   private readonly logger = new Logger(GstComplianceService.name);
+  /** Upload tables without a `status` column — skip further update attempts. */
+  private readonly statusColumnUnavailable = new Set<string>();
 
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
@@ -883,14 +885,25 @@ export class GstComplianceService {
     loanId: string,
     status: string,
   ): Promise<void> {
+    if (this.statusColumnUnavailable.has(tableName)) {
+      return;
+    }
     try {
       await this.dataSource.query(
         `UPDATE "${tableName}" SET status = $1, last_data_pull_date = NOW() WHERE associated_loan_id = $2`,
         [status, loanId],
       );
     } catch (err) {
+      const message = (err as Error).message;
+      if (message.includes('column "status"')) {
+        this.statusColumnUnavailable.add(tableName);
+        this.logger.debug(
+          `Skipping source row status updates for "${tableName}": status column not present.`,
+        );
+        return;
+      }
       this.logger.debug(
-        `Could not update source row status (${tableName}.loan_id=${loanId}): ${(err as Error).message}`,
+        `Could not update source row status (${tableName}.loan_id=${loanId}): ${message}`,
       );
     }
   }
@@ -1026,7 +1039,7 @@ export class GstComplianceService {
     return name;
   }
 
-  /** Validates the financial year (expects format like "2023-24"). */
+  /** Validates the financial year; accepts "YYYY-YY" or "FY YYYY-YY". */
   private sanitizeFinancialYear(financialYear?: string): string {
     const fy = (financialYear ?? '').trim();
     if (!fy) {
@@ -1034,12 +1047,13 @@ export class GstComplianceService {
         '"financial_year" query parameter is required (e.g. 2023-24).',
       );
     }
-    if (!/^\d{4}-\d{2}$/.test(fy)) {
+    const match = fy.match(/^(?:FY\s*)?(\d{4}-\d{2})$/i);
+    if (!match) {
       throw new BadRequestException(
         `Invalid financial_year "${fy}". Expected format "YYYY-YY" (e.g. 2023-24).`,
       );
     }
-    return fy;
+    return match[1];
   }
 
   /** Validates/normalizes the GSTR-2B reconciliation request parameters. */

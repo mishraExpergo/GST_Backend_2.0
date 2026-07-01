@@ -174,6 +174,7 @@ const VERIFY_FETCH_OPERATION = 'GSTIN_VERIFY_AND_FETCH';
 
 const VERIFY_GSTR_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR';
 
+@Injectable()
 export class GstAggregationService {
 
   private readonly logger = new Logger(GstAggregationService.name);
@@ -211,7 +212,6 @@ export class GstAggregationService {
 
 
   /**
-
    * Called when a verify-and-fetch job finishes. For each customer touched by
 
    * the job, checks whether all expected GSTINs are stored in Mongo; if so,

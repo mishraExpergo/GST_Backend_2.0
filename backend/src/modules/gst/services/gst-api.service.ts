@@ -58,19 +58,31 @@ export class GstApiService {
   /**
    * POST /gst/compliance/public/gstrs/track
    * Tracks GSTR filing status for a GSTIN in a given financial year.
-   * `financialYear` comes from the caller (frontend); `gstr` is left as the
-   * API default ("null") to return all return types.
+   * Sandbox expects a valid return type (e.g. gstr-1) and financial year
+   * in "FY YYYY-YY" form (e.g. "FY 2023-24").
    */
   async trackGstr(
     gstin: string,
     financialYear: string,
+    gstrType = 'gstr-1',
   ): Promise<Record<string, any>> {
     const params = new URLSearchParams({
-      gstr: 'null',
-      financial_year: financialYear,
+      gstr: gstrType,
+      financial_year: this.formatSandboxFinancialYear(financialYear),
     });
     const url = `${this.baseUrl}/gst/compliance/public/gstrs/track?${params.toString()}`;
     return this.authedPost<Record<string, any>>(url, { gstin });
+  }
+
+  /** Sandbox track API requires "FY YYYY-YY" (e.g. "FY 2023-24"). */
+  private formatSandboxFinancialYear(financialYear: string): string {
+    const match = financialYear.trim().match(/^(?:FY\s*)?(\d{4}-\d{2})$/i);
+    if (!match) {
+      throw new Error(
+        `Invalid financial year "${financialYear}". Expected "YYYY-YY" or "FY YYYY-YY".`,
+      );
+    }
+    return `FY ${match[1]}`;
   }
 
   /**
