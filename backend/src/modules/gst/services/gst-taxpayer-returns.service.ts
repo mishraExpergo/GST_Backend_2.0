@@ -133,6 +133,253 @@ export class GstTaxpayerReturnsService {
     );
   }
 
+  async fetchNotices(
+    identity: TaxpayerIdentity,
+    noticeDate: string,
+    tracking: RequestTrackingContext = {},
+  ): Promise<Record<string, any>> {
+    const { normalizedIdentity, normalizedDate } = this.validateNoticesInputs(
+      identity,
+      noticeDate,
+    );
+    const path = '/gst/compliance/tax-payer/notices';
+    const maxRetries = Number(this.config.get('GST_API_MAX_RETRIES', '3'));
+    const baseDelay = Number(this.config.get('GST_API_RETRY_BASE_MS', '500'));
+    const forceRefreshPerRequest =
+      this.config.get<string>('GST_TAXPAYER_REFRESH_ON_EVERY_REQUEST', 'true') ===
+      'true';
+
+    let attempt = 0;
+    let retriedAfter401 = false;
+    const associatedLoanId =
+      String(tracking.associatedLoanId ?? '').trim() ||
+      `${normalizedIdentity.username}:${normalizedIdentity.gstin}`;
+    const customerId =
+      String(tracking.customerId ?? '').trim() || normalizedIdentity.username;
+    const log = await this.apiRequestLogService.createProcessingLog({
+      gstrFamily: 'GSTR',
+      gstrType: 'GST-RETURN',
+      apiName: path,
+      associatedLoanId,
+      customerId,
+      gstNumber: normalizedIdentity.gstin,
+      dataSource: tracking.dataSource ?? 'sandbox',
+      metadata: { username: normalizedIdentity.username, date: normalizedDate },
+    });
+
+    while (true) {
+      const url = `${this.baseUrl}${path}?date=${encodeURIComponent(normalizedDate)}`;
+      const response = await (async () => {
+        try {
+          const accessToken = await this.taxpayerAuthService.getAccessTokenForTaxpayer(
+            normalizedIdentity,
+            forceRefreshPerRequest,
+          );
+          return await axios.get(url, {
+            headers: {
+              authorization: accessToken,
+              'x-api-key': this.config.get<string>('GST_API_KEY_LIVE', ''),
+              'x-api-version': this.config.get<string>('GST_API_VERSION', '1.0.0'),
+            },
+            timeout: this.timeoutMs,
+            validateStatus: () => true,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          await this.apiRequestLogService.markFailure(log.id, null, message, {
+            url,
+          });
+          throw err;
+        }
+      })();
+
+      if (
+        (response.status === 401 || response.status === 403) &&
+        !retriedAfter401
+      ) {
+        retriedAfter401 = true;
+        await this.apiRequestLogService.incrementRetry(log.id);
+        await this.taxpayerAuthService.refreshAccessToken(normalizedIdentity);
+        continue;
+      }
+
+      if (
+        (response.status === 429 || response.status >= 500) &&
+        attempt < maxRetries
+      ) {
+        attempt++;
+        await this.apiRequestLogService.incrementRetry(log.id);
+        await this.delay(baseDelay * 2 ** (attempt - 1));
+        continue;
+      }
+
+      if (response.status === 401 || response.status === 403) {
+        await this.apiRequestLogService.markFailure(
+          log.id,
+          response.status,
+          'GST notices unauthorized',
+          { url },
+        );
+        throw new UnauthorizedException(
+          'GST notices fetch unauthorized. Taxpayer session may be expired; regenerate OTP.',
+        );
+      }
+
+      if (response.status < 200 || response.status >= 300) {
+        const payload = JSON.stringify(response.data ?? {}).slice(0, 300);
+        await this.apiRequestLogService.markFailure(
+          log.id,
+          response.status,
+          payload,
+          { url },
+        );
+        this.logger.error(
+          `GST notices fetch failed for ${normalizedIdentity.gstin} (${normalizedDate}) with ${response.status}: ${payload}`,
+        );
+        throw new BadGatewayException(
+          `GST notices API failed with status ${response.status}.`,
+        );
+      }
+
+      await this.apiRequestLogService.markSuccess(log.id, response.status, {
+        url,
+      });
+
+      return {
+        message: 'GST notices fetched successfully.',
+        username: normalizedIdentity.username,
+        gstin: normalizedIdentity.gstin,
+        date: normalizedDate,
+        data: response.data,
+      };
+    }
+  }
+
+  async fetchNoticeByReferenceId(
+    identity: TaxpayerIdentity,
+    referenceId: string,
+    tracking: RequestTrackingContext = {},
+  ): Promise<Record<string, any>> {
+    const { normalizedIdentity, normalizedReferenceId } =
+      this.validateNoticeReferenceInputs(identity, referenceId);
+    const path = `/gst/compliance/tax-payer/notices/${encodeURIComponent(
+      normalizedReferenceId,
+    )}`;
+    const maxRetries = Number(this.config.get('GST_API_MAX_RETRIES', '3'));
+    const baseDelay = Number(this.config.get('GST_API_RETRY_BASE_MS', '500'));
+    const forceRefreshPerRequest =
+      this.config.get<string>('GST_TAXPAYER_REFRESH_ON_EVERY_REQUEST', 'true') ===
+      'true';
+
+    let attempt = 0;
+    let retriedAfter401 = false;
+    const associatedLoanId =
+      String(tracking.associatedLoanId ?? '').trim() ||
+      `${normalizedIdentity.username}:${normalizedIdentity.gstin}`;
+    const customerId =
+      String(tracking.customerId ?? '').trim() || normalizedIdentity.username;
+    const log = await this.apiRequestLogService.createProcessingLog({
+      gstrFamily: 'GSTR',
+      gstrType: 'GST-RETURN',
+      apiName: '/gst/compliance/tax-payer/notices/{referenceId}',
+      associatedLoanId,
+      customerId,
+      gstNumber: normalizedIdentity.gstin,
+      dataSource: tracking.dataSource ?? 'sandbox',
+      metadata: {
+        username: normalizedIdentity.username,
+        referenceId: normalizedReferenceId,
+      },
+    });
+
+    while (true) {
+      const url = `${this.baseUrl}${path}`;
+      const response = await (async () => {
+        try {
+          const accessToken = await this.taxpayerAuthService.getAccessTokenForTaxpayer(
+            normalizedIdentity,
+            forceRefreshPerRequest,
+          );
+          return await axios.get(url, {
+            headers: {
+              authorization: accessToken,
+              'x-api-key': this.config.get<string>('GST_API_KEY_LIVE', ''),
+              'x-api-version': this.config.get<string>('GST_API_VERSION', '1.0.0'),
+            },
+            timeout: this.timeoutMs,
+            validateStatus: () => true,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          await this.apiRequestLogService.markFailure(log.id, null, message, {
+            url,
+          });
+          throw err;
+        }
+      })();
+
+      if (
+        (response.status === 401 || response.status === 403) &&
+        !retriedAfter401
+      ) {
+        retriedAfter401 = true;
+        await this.apiRequestLogService.incrementRetry(log.id);
+        await this.taxpayerAuthService.refreshAccessToken(normalizedIdentity);
+        continue;
+      }
+
+      if (
+        (response.status === 429 || response.status >= 500) &&
+        attempt < maxRetries
+      ) {
+        attempt++;
+        await this.apiRequestLogService.incrementRetry(log.id);
+        await this.delay(baseDelay * 2 ** (attempt - 1));
+        continue;
+      }
+
+      if (response.status === 401 || response.status === 403) {
+        await this.apiRequestLogService.markFailure(
+          log.id,
+          response.status,
+          'GST notice detail unauthorized',
+          { url },
+        );
+        throw new UnauthorizedException(
+          'GST notice detail fetch unauthorized. Taxpayer session may be expired; regenerate OTP.',
+        );
+      }
+
+      if (response.status < 200 || response.status >= 300) {
+        const payload = JSON.stringify(response.data ?? {}).slice(0, 300);
+        await this.apiRequestLogService.markFailure(
+          log.id,
+          response.status,
+          payload,
+          { url },
+        );
+        this.logger.error(
+          `GST notice detail fetch failed for ${normalizedIdentity.gstin} (${normalizedReferenceId}) with ${response.status}: ${payload}`,
+        );
+        throw new BadGatewayException(
+          `GST notice detail API failed with status ${response.status}.`,
+        );
+      }
+
+      await this.apiRequestLogService.markSuccess(log.id, response.status, {
+        url,
+      });
+
+      return {
+        message: 'GST notice detail fetched successfully.',
+        username: normalizedIdentity.username,
+        gstin: normalizedIdentity.gstin,
+        referenceId: normalizedReferenceId,
+        data: response.data,
+      };
+    }
+  }
+
   private get baseUrl(): string {
     return this.config
       .getOrThrow<string>('GST_API_BASE_URL')
@@ -155,12 +402,16 @@ export class GstTaxpayerReturnsService {
 
     let attempt = 0;
     let retriedAfter401 = false;
+    const associatedLoanId =
+      String(tracking.associatedLoanId ?? '').trim() ||
+      `${identity.username}:${identity.gstin}`;
+    const customerId = String(tracking.customerId ?? '').trim() || identity.username;
     const log = await this.apiRequestLogService.createProcessingLog({
       gstrFamily: 'GSTR',
       gstrType: returnType,
       apiName: path,
-      associatedLoanId: tracking.associatedLoanId ?? null,
-      customerId: tracking.customerId ?? null,
+      associatedLoanId,
+      customerId,
       gstNumber: identity.gstin,
       dataSource: tracking.dataSource ?? 'sandbox',
       metadata: { username: identity.username, year, month },
@@ -305,6 +556,86 @@ export class GstTaxpayerReturnsService {
       normalizedIdentity: { username, gstin },
       yearNum,
       monthNum,
+    };
+  }
+
+  private validateNoticesInputs(
+    identity: TaxpayerIdentity,
+    noticeDate: string,
+  ): {
+    normalizedIdentity: TaxpayerIdentity;
+    normalizedDate: string;
+  } {
+    const username = String(identity.username ?? '').trim();
+    const gstin = String(identity.gstin ?? '').trim().toUpperCase();
+    const normalizedDate = String(noticeDate ?? '').trim();
+    const dateMatch = normalizedDate.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+
+    if (!username) throw new BadRequestException('"username" is required.');
+    if (!gstin) throw new BadRequestException('"gstin" is required.');
+    if (!dateMatch) {
+      throw new BadRequestException(
+        '"date" must be in DD/MM/YYYY format (example: 06/07/2026).',
+      );
+    }
+
+    const day = Number(dateMatch[1]);
+    const month = Number(dateMatch[2]);
+    const year = Number(dateMatch[3]);
+    const parsed = new Date(Date.UTC(year, month - 1, day));
+    if (
+      Number.isNaN(parsed.getTime()) ||
+      parsed.getUTCFullYear() !== year ||
+      parsed.getUTCMonth() !== month - 1 ||
+      parsed.getUTCDate() !== day
+    ) {
+      throw new BadRequestException('"date" is not a valid calendar date.');
+    }
+
+    const now = new Date();
+    const todayUtc = Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate(),
+    );
+    const dateUtc = Date.UTC(year, month - 1, day);
+    const dayDiff = Math.floor((todayUtc - dateUtc) / (24 * 60 * 60 * 1000));
+
+    if (dayDiff < 0) {
+      throw new BadRequestException('"date" cannot be in the future.');
+    }
+    if (dayDiff > 60) {
+      throw new BadRequestException(
+        '"date" must be within the last 60 days.',
+      );
+    }
+
+    return {
+      normalizedIdentity: { username, gstin },
+      normalizedDate,
+    };
+  }
+
+  private validateNoticeReferenceInputs(
+    identity: TaxpayerIdentity,
+    referenceId: string,
+  ): {
+    normalizedIdentity: TaxpayerIdentity;
+    normalizedReferenceId: string;
+  } {
+    const username = String(identity.username ?? '').trim();
+    const gstin = String(identity.gstin ?? '').trim().toUpperCase();
+    const normalizedReferenceId = String(referenceId ?? '').trim();
+
+    if (!username) throw new BadRequestException('"username" is required.');
+    if (!gstin) throw new BadRequestException('"gstin" is required.');
+    if (!normalizedReferenceId) {
+      throw new BadRequestException('"referenceId" is required.');
+    }
+
+    return {
+      normalizedIdentity: { username, gstin },
+      normalizedReferenceId,
     };
   }
 

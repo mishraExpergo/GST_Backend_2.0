@@ -1,7 +1,6 @@
 import { Gstr3bComplianceRecord } from '../schemas/gst-gstr3b-compliance.schema';
 
 export interface PrimaryGstr3bAggregationMetrics {
-  PRIMARY_TOTAL_TURNOVER: number;
   PRIMARY_TOTAL_TAXABLE_TURNOVER: number;
   PRIMARY_TOTAL_EXEMPT_TURNOVER: number;
   PRIMARY_TOTAL_REVERSE_CHARGE_SALES: number;
@@ -26,7 +25,6 @@ export interface PrimaryGstr3bAggregationMetrics {
 }
 
 export interface SecondaryGstr3bAggregationMetrics {
-  CONSIDERED_TOTAL_TURNOVER: number;
   CONSIDERED_TOTAL_TAXABLE_TURNOVER: number;
   CONSIDERED_TOTAL_EXEMPT_TURNOVER: number;
   CONSIDERED_TOTAL_REVERSE_CHARGE_SALES: number;
@@ -80,7 +78,6 @@ export function computePrimaryGstr3bAggregationMetrics(
 ): PrimaryGstr3bAggregationMetrics {
   const summary = computeSummary(records);
   return {
-    PRIMARY_TOTAL_TURNOVER: summary.totalTurnover,
     PRIMARY_TOTAL_TAXABLE_TURNOVER: summary.totalTaxableTurnover,
     PRIMARY_TOTAL_EXEMPT_TURNOVER: summary.totalExemptTurnover,
     PRIMARY_TOTAL_REVERSE_CHARGE_SALES: summary.totalReverseChargeSales,
@@ -110,7 +107,6 @@ export function computeSecondaryGstr3bAggregationMetrics(
 ): SecondaryGstr3bAggregationMetrics {
   const summary = computeSummary(records);
   return {
-    CONSIDERED_TOTAL_TURNOVER: summary.totalTurnover,
     CONSIDERED_TOTAL_TAXABLE_TURNOVER: summary.totalTaxableTurnover,
     CONSIDERED_TOTAL_EXEMPT_TURNOVER: summary.totalExemptTurnover,
     CONSIDERED_TOTAL_REVERSE_CHARGE_SALES: summary.totalReverseChargeSales,
@@ -138,7 +134,6 @@ export function computeSecondaryGstr3bAggregationMetrics(
 function computeSummary(
   records: Array<Gstr3bComplianceRecord | Record<string, any>>,
 ): {
-  totalTurnover: number;
   totalTaxableTurnover: number;
   totalExemptTurnover: number;
   totalReverseChargeSales: number;
@@ -455,8 +450,6 @@ function computeSummary(
   sgstCashPaidAmount = choose(sgstCashPaidAmount, structuredSgstCashPaidAmount);
   igstCashPaidAmount = choose(igstCashPaidAmount, structuredIgstCashPaidAmount);
 
-  const totalTurnover =
-    taxableSuppliesNormalAmount + zeroRatedNilExemptAmount + reverseChargeSuppliesAmount;
   const totalPurchaseValue =
     interStatePurchaseAmount + intraStatePurchaseAmount + nonGstPurchaseAmount;
   const totalItcAvailable =
@@ -467,7 +460,6 @@ function computeSummary(
     cgstCashPaidAmount + sgstCashPaidAmount + igstCashPaidAmount;
 
   return {
-    totalTurnover: round2(totalTurnover),
     totalTaxableTurnover: round2(taxableSuppliesAmount),
     totalExemptTurnover: round2(exemptAmount),
     totalReverseChargeSales: round2(reverseChargeSuppliesAmount),

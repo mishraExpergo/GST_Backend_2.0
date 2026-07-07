@@ -9,6 +9,7 @@ pnpm-debug.log*
 .pnpm-store/
 .npm/
 .yarn/
+.postman/
 
 # =========================
 # NestJS / TypeScript build output

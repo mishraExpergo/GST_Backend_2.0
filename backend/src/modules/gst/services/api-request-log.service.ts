@@ -58,16 +58,26 @@ export class ApiRequestLogService implements OnModuleInit {
   }
 
   async createProcessingLog(context: ApiLogContext): Promise<ApiRequestLog> {
+    const normalizedCustomerId =
+      this.normalizeNullableText(context.customerId) ??
+      this.normalizeNullableText(context.metadata?.username);
+    const normalizedGstNumber = this.normalizeNullableText(context.gstNumber);
+    const normalizedAssociatedLoanId =
+      this.normalizeNullableText(context.associatedLoanId) ??
+      (normalizedCustomerId && normalizedGstNumber
+        ? `${normalizedCustomerId}:${normalizedGstNumber}`
+        : null);
+
     const log = this.logRepo.create({
       gstrFamily: context.gstrFamily,
       gstrType: context.gstrType,
       apiName: context.apiName,
       retryCount: 0,
       status: 'PROCESSING',
-      associatedLoanId: context.associatedLoanId ?? null,
-      customerId: context.customerId ?? null,
-      gstNumber: context.gstNumber ?? null,
-      dataSource: context.dataSource ?? null,
+      associatedLoanId: normalizedAssociatedLoanId,
+      customerId: normalizedCustomerId,
+      gstNumber: normalizedGstNumber,
+      dataSource: this.normalizeNullableText(context.dataSource),
       metadata: context.metadata ?? null,
     });
     return this.logRepo.save(log);
@@ -156,7 +166,6 @@ export class ApiRequestLogService implements OnModuleInit {
         associated_loan_id text NULL,
         customer_id text NULL,
         gst_number text NULL,
-        
         data_source text NULL,
         response_status_code int NULL,
         error_message text NULL,
@@ -165,5 +174,10 @@ export class ApiRequestLogService implements OnModuleInit {
         updated_at timestamptz NOT NULL DEFAULT now()
       )
     `);
+  }
+
+  private normalizeNullableText(value: unknown): string | null {
+    const normalized = String(value ?? '').trim();
+    return normalized ? normalized : null;
   }
 }

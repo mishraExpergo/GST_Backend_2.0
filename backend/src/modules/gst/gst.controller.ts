@@ -415,6 +415,47 @@ export class GstController {
   }
 
   /**
+   * GET /gst/taxpayer/notices?username=...&gstin=...&date=DD/MM/YYYY
+   * Date must be within the last 60 days.
+   */
+  @Get('taxpayer/notices')
+  async fetchTaxpayerNotices(
+    @Query('username') username: string,
+    @Query('gstin') gstin: string,
+    @Query('date') date: string,
+    @Query('associatedLoanId') associatedLoanId?: string,
+    @Query('customerId') customerId?: string,
+    @Query('dataSource') dataSource?: string,
+  ) {
+    const data = await this.gstTaxpayerReturnsService.fetchNotices(
+      { username, gstin },
+      date,
+      { associatedLoanId, customerId, dataSource },
+    );
+    return this.successResponse('taxpayer-returns.notices', data);
+  }
+
+  /**
+   * GET /gst/taxpayer/notices/:referenceId?username=...&gstin=...
+   */
+  @Get('taxpayer/notices/:referenceId')
+  async fetchTaxpayerNoticeByReferenceId(
+    @Param('referenceId') referenceId: string,
+    @Query('username') username: string,
+    @Query('gstin') gstin: string,
+    @Query('associatedLoanId') associatedLoanId?: string,
+    @Query('customerId') customerId?: string,
+    @Query('dataSource') dataSource?: string,
+  ) {
+    const data = await this.gstTaxpayerReturnsService.fetchNoticeByReferenceId(
+      { username, gstin },
+      referenceId,
+      { associatedLoanId, customerId, dataSource },
+    );
+    return this.successResponse('taxpayer-returns.notice-detail', data);
+  }
+
+  /**
    * GET /gst/api-logs
    * Optional filters:
    * gstrType, status, customerId, associatedLoanId, gstNumber,

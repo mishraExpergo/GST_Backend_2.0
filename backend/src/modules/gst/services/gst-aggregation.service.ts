@@ -189,6 +189,7 @@ const VERIFY_FETCH_OPERATION = 'GSTIN_VERIFY_AND_FETCH';
 const VERIFY_GSTR_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR';
 const VERIFY_2B_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_2B';
 const VERIFY_3B_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_3B';
+const OBSOLETE_GSTR3B_KEYS = ['PRIMARY_TOTAL_TURNOVER', 'CONSIDERED_TOTAL_TURNOVER'] as const;
 
 @Injectable()
 export class GstAggregationService {
@@ -701,12 +702,16 @@ export class GstAggregationService {
           existingPrimary?.aggregationVariable ?? null,
           primaryMetrics as unknown as Record<string, unknown>,
         );
+        const cleanedPrimaryJson = this.removeAggregationKeys(
+          mergedPrimaryJson,
+          OBSOLETE_GSTR3B_KEYS,
+        );
 
         primaryRowsToSave.push({
           ...(existingPrimary?.id ? { id: existingPrimary.id } : {}),
           customerId,
           associatedLoanId: uploadRow.associated_loan_id,
-          aggregationVariable: mergedPrimaryJson,
+          aggregationVariable: cleanedPrimaryJson,
         });
       }
 
@@ -725,12 +730,16 @@ export class GstAggregationService {
           existingSecondary?.aggregationVariable ?? null,
           consideredMetrics as unknown as Record<string, unknown>,
         );
+        const cleanedSecondaryJson = this.removeAggregationKeys(
+          mergedSecondaryJson,
+          OBSOLETE_GSTR3B_KEYS,
+        );
 
         secondaryRowsToSave.push({
           ...(existingSecondary?.id ? { id: existingSecondary.id } : {}),
           customerId,
           associatedLoanId: uploadRow.associated_loan_id,
-          aggregationVariable: mergedSecondaryJson,
+          aggregationVariable: cleanedSecondaryJson,
         });
       }
     }
@@ -1912,6 +1921,24 @@ export class GstAggregationService {
 
       .filter(Boolean);
 
+  }
+
+  private removeAggregationKeys(
+    jsonValue: string | null | undefined,
+    keys: readonly string[],
+  ): string {
+    if (!jsonValue) {
+      return JSON.stringify({});
+    }
+    try {
+      const parsed = JSON.parse(jsonValue) as Record<string, unknown>;
+      for (const key of keys) {
+        delete parsed[key];
+      }
+      return JSON.stringify(parsed);
+    } catch {
+      return jsonValue;
+    }
   }
 
 }
