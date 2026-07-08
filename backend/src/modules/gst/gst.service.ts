@@ -6,11 +6,11 @@ import {
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { InjectDataSource } from '@nestjs/typeorm';
 import { InjectConnection } from '@nestjs/mongoose';
-import { DataSource } from 'typeorm';
+import { InjectDataSource } from '@nestjs/typeorm';
 import { Connection } from 'mongoose';
-import * as XLSX from 'xlsx';  
+import { DataSource } from 'typeorm';
+import * as XLSX from 'xlsx';
 
 type PgType = 'INTEGER' | 'NUMERIC' | 'TIMESTAMP' | 'BOOLEAN' | 'TEXT';
 
@@ -22,144 +22,298 @@ interface ColumnDef {
 
 export const GST_UPLOAD_TABLE = 'gst_uploaded_file_data';
 
+export interface AggregationRow {
+  outputField: string;
+  output: string;
+}
+
 @Injectable()
 export class GstService {
   private readonly logger = new Logger(GstService.name);
 
+  private readonly mongoConnection?: Connection;
+
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
-    @Optional()
-    @InjectConnection()
-    private readonly mongoConnection?: Connection,
-  ) {}
-
-  async getPublicComplianceData(
-    page = 1,
-    limit = 50,
-    companyId?: string,
-    gstin?: string,
+    @Optional() @InjectConnection() mongoConnection?: Connection,
   ) {
-    if (!this.mongoConnection || this.mongoConnection.readyState !== 1) {
-      throw new ServiceUnavailableException(
-        'MongoDB connection is not available. Set ENABLE_MONGO=true and configure MONGO_URI.',
-      );
-    }
+    this.mongoConnection = mongoConnection;
+  }
 
-    const safePage = Math.max(1, page);
-    const safeLimit = Math.min(Math.max(1, limit), 200);
-    const skip = (safePage - 1) * safeLimit;
-    const collection = this.mongoConnection.collection('gst_compliance_data');
+ 
 
-    // Treat records as public by default when visibility flags are missing.
-    // This avoids returning blank data for legacy records that don't store these flags.
-    const visibilityFilter = {
-      $or: [
-        { isPublic: true },
-        { public: true },
-        { visibility: /^public$/i },
-        { access: /^public$/i },
+async getPublicComplianceData(loanId: string) {
+  if (!this.mongoConnection) {
+    throw new ServiceUnavailableException('MongoDB not configured.');
+  }
+
+  try {
+    // Perform an aggregation to join history data
+    const data = await this.mongoConnection
+      .collection('gst_compliance_data') // Your primary collection
+      .aggregate([
+        { $match: { loanId } }, // Filter by loanId
         {
-          $and: [
-            { isPublic: { $exists: false } },
-            { public: { $exists: false } },
-            { visibility: { $exists: false } },
-            { access: { $exists: false } },
-          ],
-        },
-      ],
-    };
-
-    const scopedFilters: Record<string, unknown>[] = [];
-    const trimmedCompanyId = companyId?.trim();
-    const trimmedGstin = gstin?.trim();
-
-    if (trimmedCompanyId) {
-      scopedFilters.push(
-        { companyId: trimmedCompanyId },
-        { company_id: trimmedCompanyId },
-        { company: trimmedCompanyId },
-      );
-    }
-
-    if (trimmedGstin) {
-      const normalizedGstin = trimmedGstin.toUpperCase();
-      const escapedNormalizedGstin = normalizedGstin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      scopedFilters.push(
-        { gstin: normalizedGstin },
-        { gstin: trimmedGstin },
-        { gstin: normalizedGstin.toLowerCase() },
-        { gstin: { $regex: `^${escapedNormalizedGstin}$`, $options: 'i' } },
-        { gstinNo: normalizedGstin },
-        { gstinNo: { $regex: `^${escapedNormalizedGstin}$`, $options: 'i' } },
-        { gstin_no: normalizedGstin },
-        { gstin_no: { $regex: `^${escapedNormalizedGstin}$`, $options: 'i' } },
-        { gstinNumber: normalizedGstin },
-        { gstinNumber: { $regex: `^${escapedNormalizedGstin}$`, $options: 'i' } },
-        { GSTIN: normalizedGstin },
-        { GSTIN: { $regex: `^${escapedNormalizedGstin}$`, $options: 'i' } },
-        { 'verifyresponse.data.data.gstin': normalizedGstin },
-        {
-          'verifyresponse.data.data.gstin': {
-            $regex: `^${escapedNormalizedGstin}$`,
-            $options: 'i',
+          // Normalize gstin (trim + uppercase) before joining. A plain $lookup does
+          // an exact string match, and mismatched casing/whitespace between the two
+          // collections causes filingHistory to silently come back empty for every row.
+          $addFields: {
+            _normalizedGstin: {
+              $toUpper: {
+                $trim: {
+                  input: {
+                    $ifNull: ['$gstin', ''],
+                  },
+                },
+              },
+            },
           },
         },
-      );
-    }
+        {
+          $lookup: {
+            from: 'gst_gstR1_complaince_data', // The history collection
+            let: { gstin: '$_normalizedGstin' },
+            pipeline: [
+              {
+                $addFields: {
+                  _normalizedGstin: {
+                    $toUpper: {
+                      $trim: {
+                        input: { $ifNull: ['$gstin', ''] },
+                      },
+                    },
+                  },
+                },
+              },
+              {
+                $match: {
+                  $expr: { $eq: ['$_normalizedGstin', '$$gstin'] },
+                },
+              },
+              { $project: { _normalizedGstin: 0 } },
+            ],
+            as: 'filingHistory', // Attached as a new field
+          },
+        },
+        { $project: { _normalizedGstin: 0 } },
+      ])
+      .toArray();
 
-    const filter =
-      scopedFilters.length > 0
-        ? {
-            $and: [visibilityFilter, { $or: scopedFilters }],
-          }
-        : visibilityFilter;
-
-    const projection = {
-      __v: 0,
-      password: 0,
-      token: 0,
-      refreshToken: 0,
-      accessToken: 0,
-      apiKey: 0,
-      secret: 0,
+    return {
+      loanId,
+      count: data.length,
+      data,
     };
+  } catch (err) {
+    this.logger.error('Error fetching compliance data', err);
+    throw new InternalServerErrorException('Error fetching data');
+  }
+}
 
-    try {
-      const [total, docs] = await Promise.all([
-        collection.countDocuments(filter),
-        collection
-          .find(filter, { projection })
-          .sort({ updatedAt: -1, _id: -1 })
-          .skip(skip)
-          .limit(safeLimit)
-          .toArray(),
-      ]);
+async getPrimaryAggregation(loanId: string) {
+  // Queries the primary_gst_aggregation table as required[cite: 2]
+  const query = 'SELECT * FROM public.primary_gst_aggregation WHERE associated_loan_id = $1';
+  const result = await this.dataSource.query(query, [loanId]);
+  return result;
+};
 
-      const data = docs.map((doc) => {
-        const { _id, ...rest } = doc as Record<string, unknown> & { _id?: unknown };
-        return {
-          id: _id ? String(_id) : undefined,
-          ...rest,
-        };
+async getSecondaryAggregation(loanId: string) {
+  // Queries the secondary_gst_aggregation table as required[cite: 2]
+  const query = 'SELECT * FROM public.secondary_gst_aggregation WHERE associated_loan_id = $1';
+  const result = await this.dataSource.query(query, [loanId]);
+  // NOTE: dataSource.query() (TypeORM) already resolves to the row array
+  // itself, not a `{ rows }` wrapper (that's the pg driver's shape). The
+  // previous `return result.rows;` always returned undefined.
+  return result;
+};
+
+/**
+ * Backs GET /gst/api-request-logs?loanId=...
+ *
+ * Reads public.api_request_logs for the given loanId. Used to fill in the
+ * "pending" fields on Operational Status (API Name, Data Source, Retry
+ * Count, API Status) and to surface a "Last Updated" timestamp for the
+ * Company Summary / Company Details views.
+ *
+ * The timestamp column is detected dynamically (falls back gracefully if
+ * the table only has one of created_at/updated_at, or neither).
+ */
+async getApiRequestLogs(params: { loanId?: string; gstin?: string }) {
+  const loanId = params.loanId?.trim();
+  const gstin = params.gstin?.trim();
+
+  if (!loanId && !gstin) {
+    throw new BadRequestException('loanId or gstin is required.');
+  }
+
+  // Match on loanId OR gstin. Some api_request_logs rows have unreliable/
+  // placeholder associated_loan_id values, but a correctly populated
+  // gst_number — so filtering on loanId alone can silently miss real rows.
+  const conditions: string[] = [];
+  const values: string[] = [];
+
+  if (loanId) {
+    values.push(loanId);
+    conditions.push(`TRIM(associated_loan_id) = TRIM($${values.length})`);
+  }
+
+  if (gstin) {
+    values.push(gstin);
+    conditions.push(`UPPER(TRIM(gst_number)) = UPPER(TRIM($${values.length}))`);
+  }
+
+  const timestampColumns = await this.dataSource.query<{ column_name: string }[]>(
+    `SELECT column_name FROM information_schema.columns
+     WHERE table_schema = 'public'
+       AND table_name = 'api_request_logs'
+       AND column_name IN ('updated_at', 'created_at')`,
+  );
+
+  const availableColumns = new Set((timestampColumns ?? []).map((c) => c.column_name));
+  const timestampColumn = availableColumns.has('updated_at')
+    ? 'updated_at'
+    : availableColumns.has('created_at')
+    ? 'created_at'
+    : null;
+
+  const rows = await this.dataSource.query(
+    `SELECT * FROM public.api_request_logs
+     WHERE ${conditions.join(' OR ')}
+     ${timestampColumn ? `ORDER BY "${timestampColumn}" DESC` : 'ORDER BY id DESC'}`,
+    values,
+  );
+
+  const lastUpdatedAt =
+    timestampColumn && rows?.length ? rows[0][timestampColumn] : null;
+
+  return {
+    loanId: loanId ?? null,
+    gstin: gstin ?? null,
+    count: rows?.length ?? 0,
+    lastUpdatedAt,
+    data: rows ?? [],
+  };
+}
+
+/**
+ * Builds the "Aggregation Table" shown when a user clicks the info (i)
+ * icon next to a loan's Associated Loan ID. Combines the primary
+ * company's aggregation row with every considered/secondary entity's
+ * aggregation row for that loan, and flattens each into
+ * { outputField, output } pairs for a simple two-column table.
+ */
+async getAggregationTable(
+  loanId: string, 
+  type: 'primary' | 'secondary' = 'primary'
+): Promise<{ rows: AggregationRow[]; debug: Record<string, unknown> }> {
+  const trimmedLoanId = loanId?.trim();
+  
+  if (!trimmedLoanId) {
+    throw new BadRequestException('loanId is required.');
+  } 
+
+  const debug: Record<string, unknown> = {
+    receivedLoanId: trimmedLoanId,
+    requestedType: type,
+  };
+
+  let rows: any[] = [];
+
+  // 1. Query the explicit table requested by the frontend
+  if (type === 'primary') {
+    rows = await this.dataSource.query(
+      'SELECT * FROM public.primary_gst_aggregation WHERE TRIM(associated_loan_id) = TRIM($1)',
+      [trimmedLoanId],
+    );
+    debug.source = 'primary_gst_aggregation';
+  } else {
+    rows = await this.dataSource.query(
+      'SELECT * FROM public.secondary_gst_aggregation WHERE TRIM(associated_loan_id) = TRIM($1)',
+      [trimmedLoanId],
+    );
+    debug.source = 'secondary_gst_aggregation';
+  }
+
+  debug.rowCount = rows?.length ?? 0;
+
+  const result: AggregationRow[] = [];
+  const hasMultipleRows = (rows ?? []).length > 1;
+
+  // 2. Parse and format the data using your existing helper methods
+  for (const row of (rows ?? [])) {
+    // Uses your existing parseAggregationVariable method
+    const parsed = this.parseAggregationVariable(row.aggregation_variable); 
+    
+    for (const [key, value] of Object.entries(parsed)) {
+      // Keep your logic to disambiguate multiple secondary entities using customer_id
+      const outputField = (type === 'secondary' && hasMultipleRows && row.customer_id) 
+        ? `${key} (${row.customer_id})` 
+        : key;
+        
+      result.push({ 
+        outputField, 
+        output: this.formatOutputValue(value) // Uses your existing formatOutputValue method
       });
-
-      return {
-        collection: 'gst_compliance_data',
-        total,
-        page: safePage,
-        limit: safeLimit,
-        data,
-      };
-    } catch (err) {
-      this.logger.error(
-        'Failed to fetch public data from "gst_compliance_data"',
-        err as Error,
-      );
-      throw new InternalServerErrorException(
-        `Failed to fetch MongoDB data: ${(err as Error).message}`,
-      );
     }
   }
+
+  debug.parsedEntryCount = result.length;
+  
+  return { rows: result, debug };
+}
+
+private formatOutputValue(value: unknown): string {
+  if (value === null || value === undefined) return '—';
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value);
+}
+
+/**
+ * The `aggregation_variable` column stores a Python-dict-style string, e.g.
+ * "{'PRIMARY_TOTAL_GST_COUNT':0,'PRIMARY_ADDRESS_CHANGE':false}" — single
+ * quotes instead of double quotes, which makes it invalid JSON as-is.
+ * Convert it to valid JSON and parse properly (handles nested
+ * objects/arrays correctly, unlike a naive regex would).
+ */
+private parseAggregationVariable(raw: unknown): Record<string, unknown> {
+  if (raw === null || raw === undefined) return {};
+
+  if (typeof raw === 'object') {
+    // Already parsed (e.g. if the column type is json/jsonb instead of text).
+    return raw as Record<string, unknown>;
+  }
+
+  const str = String(raw).trim();
+  if (!str || str === '{}') return {};
+
+  // Convert Python-dict-literal syntax to valid JSON:
+  // single quotes -> double quotes, None/True/False -> null/true/false.
+  // This is a best-effort textual conversion (it does not attempt to
+  // preserve apostrophes inside string values); it works for this
+  // pipeline's generated data, which never contains embedded quotes.
+  const jsonLike = str
+    .replace(/'/g, '"')
+    .replace(/\bNone\b/g, 'null')
+    .replace(/\bTrue\b/g, 'true')
+    .replace(/\bFalse\b/g, 'false');
+
+  try {
+    const parsed = JSON.parse(jsonLike);
+    return typeof parsed === 'object' && parsed !== null ? parsed : {};
+  } catch (err) {
+    this.logger.warn(
+      `Failed to parse aggregation_variable as JSON. Raw (first 200 chars): ${str.slice(0, 200)}`,
+    );
+    return {};
+  }
+}
 
   async getTableData(rawTableName: string, page = 1, limit = 50) {
     const tableName = this.sanitizeIdentifier(rawTableName);
@@ -309,6 +463,18 @@ export class GstService {
     } finally {
       await queryRunner.release();
     }
+  }
+
+  // TEMP DEBUG — remove once the empty-result issue is resolved.
+  getDebugConnectionInfo() {
+    const opts = this.dataSource.options as any;
+    return {
+      type: opts.type,
+      database: opts.database,
+      host: opts.host,
+      port: opts.port,
+      schema: opts.schema ?? 'public',
+    };
   }
 
   private sanitizeIdentifier(name: string): string {

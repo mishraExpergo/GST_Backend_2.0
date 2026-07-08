@@ -1,4 +1,4 @@
-import { BadRequestException, Body,Controller, Get, Headers, Post,Query,UploadedFile,UseInterceptors,} from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Post, Query, UploadedFile, UseInterceptors } from '@nestjs/common';
 
 import { FileInterceptor } from '@nestjs/platform-express';
 
@@ -47,56 +47,78 @@ export class GstController {
   }
 
   /**
-   * GET /gst/compliance/public
-   * Returns public records from MongoDB collection gst_compliance_data.
+   * GET /gst/compliance/public?loanId=...
+   * Returns all GST compliance records for the given loanId from MongoDB.
    */
   @Get('compliance/public')
-  async getPublicComplianceData(
-    @Query('page') page = '1',
-    @Query('limit') limit = '50',
-    @Query('companyId') companyId?: string | string[],
-    @Query('gstin') gstin?: string | string[],
-    @Headers('x-company-id') companyIdHeader?: string | string[],
-    @Headers('gstin') gstinHeader?: string | string[],
-    @Headers('x-gstin') xGstinHeader?: string | string[],
-    @Headers('x-gstin-number') xGstinNumberHeader?: string | string[],
+  async getPublicComplianceData(@Query('loanId') loanId?: string) {
+    const normalizedLoanId = loanId?.trim();
+    if (!normalizedLoanId) {
+      throw new BadRequestException('Query parameter "loanId" is required.');
+    }
+
+    const data = await this.gstService.getPublicComplianceData(normalizedLoanId);
+    console.log(data);
+    return data;
+  }
+
+  /**
+   * GET /gst/api-request-logs?loanId=...&gstin=...
+   * Returns rows from api_request_logs matching the given loanId and/or
+   * gstin (matched with OR), plus lastUpdatedAt (most recent log timestamp
+   * among the matches). Matching on gstin as well as loanId matters because
+   * some log rows have unreliable/placeholder associated_loan_id values but
+   * a correctly populated gst_number. Used to fill the pending Operational
+   * Status fields (API Name, Data Source, Retry Count, API Status) and the
+   * "Last Updated" shown on Company Summary / Company Details.
+   */
+  @Get('api-request-logs')
+  async getApiRequestLogs(
+    @Query('loanId') loanId?: string,
+    @Query('gstin') gstin?: string,
   ) {
-    const resolvedCompanyId =
-      this.getFirstNonEmptyValue(companyId) ||
-      this.getFirstNonEmptyValue(companyIdHeader);
-    const resolvedGstin =
-      this.getFirstNonEmptyValue(gstin) ||
-      this.getFirstNonEmptyValue(gstinHeader) ||
-      this.getFirstNonEmptyValue(xGstinHeader) ||
-      this.getFirstNonEmptyValue(xGstinNumberHeader);
+    const normalizedLoanId = loanId?.trim();
+    const normalizedGstin = gstin?.trim();
 
-    return this.gstService.getPublicComplianceData(
-      Number.parseInt(page, 10) || 1,
-      Number.parseInt(limit, 10) || 50,
-      resolvedCompanyId,
-      resolvedGstin,
-    );
-  }
-
-  private getFirstNonEmptyValue(input?: string | string[]): string | undefined {
-    if (Array.isArray(input)) {
-      for (const value of input) {
-        const normalized = this.getFirstNonEmptyValue(value);
-        if (normalized) {
-          return normalized;
-        }
-      }
-      return undefined;
+    if (!normalizedLoanId && !normalizedGstin) {
+      throw new BadRequestException('Query parameter "loanId" or "gstin" is required.');
     }
 
-    if (typeof input !== 'string') {
-      return undefined;
-    }
-
-    const trimmed = input.trim();
-    return trimmed.length > 0 ? trimmed : undefined;
+    return this.gstService.getApiRequestLogs({
+      loanId: normalizedLoanId,
+      gstin: normalizedGstin,
+    });
   }
 
+  /**
+   * GET /gst/aggregation?loanId=...
+   * Returns the flattened { outputField, output } rows for the Aggregation
+   * Table modal (primary company + every considered/secondary entity for
+   * that loan), read from primary_gst_aggregation / secondary_gst_aggregation.
+   */
+  @Get('aggregation')
+  async getAggregationData(
+    @Query('loanId') loanId: string,
+    @Query('type') type?: string,
+  ) {
+    if (!loanId) {
+      throw new BadRequestException('loanId is required');
+    }
+
+    // Default to primary if not provided, for backwards compatibility
+    const requestedType = type === 'secondary' ? 'secondary' : 'primary';
+
+    // Call the updated service method
+    const result = await this.gstService.getAggregationTable(loanId, requestedType);
+
+    // Format the response to match the AggregationApiResponse interface your frontend expects
+    return {
+      loanId: loanId,
+      count: result.rows.length,
+      data: result.rows,
+      debug: result.debug // Optional: keep for debugging purposes
+    };
+  }
 
 
   /**
@@ -170,5 +192,3 @@ export class GstController {
   }
 
 }
-
-
