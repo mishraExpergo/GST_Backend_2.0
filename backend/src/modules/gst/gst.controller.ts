@@ -63,6 +63,16 @@ export class GstController {
   }
 
   /**
+   * GET /gst/customer-gstr-status-counts
+   * Returns per customer_id counts of updated, pending, and failed for
+   * GSTR1, GSTR2B, and GSTR3B based on api_request_logs.
+   */
+  @Get('customer-gstr-status-counts')
+  async getCustomerGstrStatusCounts() {
+    return this.gstService.getCustomerGstrStatusCounts();
+  }
+
+  /**
    * GET /gst/api-request-logs?loanId=...&gstin=...
    * Returns rows from api_request_logs matching the given loanId and/or
    * gstin (matched with OR), plus lastUpdatedAt (most recent log timestamp

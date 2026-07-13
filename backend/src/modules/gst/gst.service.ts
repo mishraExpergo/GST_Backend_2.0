@@ -27,6 +27,18 @@ export interface AggregationRow {
   output: string;
 }
 
+export interface GstrStatusCounts {
+  updated: number;
+  pending: number;
+  failed: number;
+}
+
+export interface CustomerGstrStatusSummary {
+  GSTR1: GstrStatusCounts;
+  GSTR2B: GstrStatusCounts;
+  GSTR3B: GstrStatusCounts;
+}
+
 @Injectable()
 export class GstService {
   private readonly logger = new Logger(GstService.name);
@@ -71,7 +83,7 @@ async getPublicComplianceData(loanId: string) {
         },
         {
           $lookup: {
-            from: 'gst_gstR1_complaince_data', // The history collection
+            from: 'gst_return_filing_track', // The history collection
             let: { gstin: '$_normalizedGstin' },
             pipeline: [
               {
@@ -196,6 +208,130 @@ async getApiRequestLogs(params: { loanId?: string; gstin?: string }) {
 }
 
 /**
+ * Backs GET /gst/customer-gstr-status-counts
+ *
+ * Aggregates api_request_logs per customer_id for GSTR-1, GSTR-2B, and GSTR-3B.
+ * SUCCESS -> updated, FAILED -> failed, missing GSTIN row for a GSTR type -> pending.
+ */
+async getCustomerGstrStatusCounts(): Promise<Record<string, CustomerGstrStatusSummary>> {
+  const timestampColumns = await this.dataSource.query<{ column_name: string }[]>(
+    `SELECT column_name FROM information_schema.columns
+     WHERE table_schema = 'public'
+       AND table_name = 'api_request_logs'
+       AND column_name IN ('updated_at', 'created_at')`,
+  );
+
+  const availableColumns = new Set((timestampColumns ?? []).map((c) => c.column_name));
+  const timestampColumn = availableColumns.has('updated_at')
+    ? 'updated_at'
+    : availableColumns.has('created_at')
+    ? 'created_at'
+    : 'id';
+
+  const customerGstins = await this.dataSource.query<
+    { customer_id: string; gst_number: string }[]
+  >(
+    `SELECT DISTINCT
+       TRIM(customer_id) AS customer_id,
+       UPPER(TRIM(gst_number)) AS gst_number
+     FROM public.api_request_logs
+     WHERE customer_id IS NOT NULL
+       AND TRIM(customer_id) <> ''
+       AND gst_number IS NOT NULL
+       AND TRIM(gst_number) <> ''`,
+  );
+
+  const latestLogs = await this.dataSource.query<
+    { customer_id: string; gst_number: string; gstr_type: string; status: string }[]
+  >(
+    `SELECT DISTINCT ON (
+       TRIM(customer_id),
+       UPPER(TRIM(gst_number)),
+       gstr_type
+     )
+       TRIM(customer_id) AS customer_id,
+       UPPER(TRIM(gst_number)) AS gst_number,
+       gstr_type,
+       UPPER(TRIM(status)) AS status
+     FROM public.api_request_logs
+     WHERE customer_id IS NOT NULL
+       AND TRIM(customer_id) <> ''
+       AND gst_number IS NOT NULL
+       AND TRIM(gst_number) <> ''
+       AND gstr_type IN ('GSTR-1', 'GSTR-2B', 'GSTR-3B')
+     ORDER BY
+       TRIM(customer_id),
+       UPPER(TRIM(gst_number)),
+       gstr_type,
+       "${timestampColumn}" DESC NULLS LAST`,
+  );
+
+  const gstrTypeMap: Record<string, keyof CustomerGstrStatusSummary> = {
+    'GSTR-1': 'GSTR1',
+    'GSTR-2B': 'GSTR2B',
+    'GSTR-3B': 'GSTR3B',
+  };
+
+  const createEmptyCounts = (): GstrStatusCounts => ({
+    updated: 0,
+    pending: 0,
+    failed: 0,
+  });
+
+  const createEmptySummary = (): CustomerGstrStatusSummary => ({
+    GSTR1: createEmptyCounts(),
+    GSTR2B: createEmptyCounts(),
+    GSTR3B: createEmptyCounts(),
+  });
+
+  const gstinsByCustomer = new Map<string, Set<string>>();
+  for (const row of customerGstins ?? []) {
+    if (!gstinsByCustomer.has(row.customer_id)) {
+      gstinsByCustomer.set(row.customer_id, new Set());
+    }
+    gstinsByCustomer.get(row.customer_id)!.add(row.gst_number);
+  }
+
+  const statusByCustomerGstinType = new Map<string, string>();
+  for (const row of latestLogs ?? []) {
+    const summaryKey = gstrTypeMap[row.gstr_type];
+    if (!summaryKey) continue;
+    statusByCustomerGstinType.set(
+      `${row.customer_id}|${row.gst_number}|${summaryKey}`,
+      row.status,
+    );
+  }
+
+  const result: Record<string, CustomerGstrStatusSummary> = {};
+
+  for (const [customerId, gstins] of gstinsByCustomer) {
+    const summary = createEmptySummary();
+
+    for (const gstrKey of ['GSTR1', 'GSTR2B', 'GSTR3B'] as const) {
+      for (const gstNumber of gstins) {
+        const status = statusByCustomerGstinType.get(
+          `${customerId}|${gstNumber}|${gstrKey}`,
+        );
+
+        if (!status) {
+          summary[gstrKey].pending += 1;
+        } else if (status === 'SUCCESS') {
+          summary[gstrKey].updated += 1;
+        } else if (status === 'FAILED') {
+          summary[gstrKey].failed += 1;
+        } else {
+          summary[gstrKey].pending += 1;
+        }
+      }
+    }
+
+    result[customerId] = summary;
+  }
+
+  return result;
+}
+
+/**  
  * Builds the "Aggregation Table" shown when a user clicks the info (i)
  * icon next to a loan's Associated Loan ID. Combines the primary
  * company's aggregation row with every considered/secondary entity's
