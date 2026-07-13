@@ -7,10 +7,14 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
-import { InjectDataSource } from '@nestjs/typeorm';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { Connection } from 'mongoose';
-import { DataSource } from 'typeorm';
+import { DataSource, QueryRunner, Repository } from 'typeorm';
 import * as XLSX from 'xlsx';
+import * as fs from 'fs';
+import { Job, JobStatus, JobType } from '../../entities/job.entity';
+import { JobTask, TaskStatus } from '../../entities/job-task.entity';
+import { FileStorageService } from '../shared/services/file-storage.service';
 
 type PgType = 'INTEGER' | 'NUMERIC' | 'TIMESTAMP' | 'BOOLEAN' | 'TEXT';
 
@@ -42,196 +46,189 @@ export interface CustomerGstrStatusSummary {
 @Injectable()
 export class GstService {
   private readonly logger = new Logger(GstService.name);
-
   private readonly mongoConnection?: Connection;
 
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
+    @InjectRepository(Job) private readonly jobRepo: Repository<Job>,
+    @InjectRepository(JobTask) private readonly taskRepo: Repository<JobTask>,
+    private readonly fileStorageService: FileStorageService,
     @Optional() @InjectConnection() mongoConnection?: Connection,
   ) {
     this.mongoConnection = mongoConnection;
   }
 
- 
+  // ------------------ Dashboard / read APIs (from feature/getApisAmishaBackend) ------------------
 
-async getPublicComplianceData(loanId: string) {
-  if (!this.mongoConnection) {
-    throw new ServiceUnavailableException('MongoDB not configured.');
-  }
+  async getPublicComplianceData(loanId: string) {
+    if (!this.mongoConnection) {
+      throw new ServiceUnavailableException('MongoDB not configured.');
+    }
 
-  try {
-    // Perform an aggregation to join history data
-    const data = await this.mongoConnection
-      .collection('gst_compliance_data') // Your primary collection
-      .aggregate([
-        { $match: { loanId } }, // Filter by loanId
-        {
-          // Normalize gstin (trim + uppercase) before joining. A plain $lookup does
-          // an exact string match, and mismatched casing/whitespace between the two
-          // collections causes filingHistory to silently come back empty for every row.
-          $addFields: {
-            _normalizedGstin: {
-              $toUpper: {
-                $trim: {
-                  input: {
-                    $ifNull: ['$gstin', ''],
+    try {
+      const data = await this.mongoConnection
+        .collection('gst_compliance_data')
+        .aggregate([
+          { $match: { loanId } },
+          {
+            $addFields: {
+              _normalizedGstin: {
+                $toUpper: {
+                  $trim: {
+                    input: {
+                      $ifNull: ['$gstin', ''],
+                    },
                   },
                 },
               },
             },
           },
-        },
-        {
-          $lookup: {
-            from: 'gst_return_filing_track', // The history collection
-            let: { gstin: '$_normalizedGstin' },
-            pipeline: [
-              {
-                $addFields: {
-                  _normalizedGstin: {
-                    $toUpper: {
-                      $trim: {
-                        input: { $ifNull: ['$gstin', ''] },
+          {
+            $lookup: {
+              from: 'gst_return_filing_track',
+              let: { gstin: '$_normalizedGstin' },
+              pipeline: [
+                {
+                  $addFields: {
+                    _normalizedGstin: {
+                      $toUpper: {
+                        $trim: {
+                          input: { $ifNull: ['$gstin', ''] },
+                        },
                       },
                     },
                   },
                 },
-              },
-              {
-                $match: {
-                  $expr: { $eq: ['$_normalizedGstin', '$$gstin'] },
+                {
+                  $match: {
+                    $expr: { $eq: ['$_normalizedGstin', '$$gstin'] },
+                  },
                 },
-              },
-              { $project: { _normalizedGstin: 0 } },
-            ],
-            as: 'filingHistory', // Attached as a new field
+                { $project: { _normalizedGstin: 0 } },
+              ],
+              as: 'filingHistory',
+            },
           },
-        },
-        { $project: { _normalizedGstin: 0 } },
-      ])
-      .toArray();
+          { $project: { _normalizedGstin: 0 } },
+        ])
+        .toArray();
 
-    return {
-      loanId,
-      count: data.length,
-      data,
-    };
-  } catch (err) {
-    this.logger.error('Error fetching compliance data', err);
-    throw new InternalServerErrorException('Error fetching data');
-  }
-}
-
-async getPrimaryAggregation(loanId: string) {
-  // Queries the primary_gst_aggregation table as required[cite: 2]
-  const query = 'SELECT * FROM public.primary_gst_aggregation WHERE associated_loan_id = $1';
-  const result = await this.dataSource.query(query, [loanId]);
-  return result;
-};
-
-async getSecondaryAggregation(loanId: string) {
-  // Queries the secondary_gst_aggregation table as required[cite: 2]
-  const query = 'SELECT * FROM public.secondary_gst_aggregation WHERE associated_loan_id = $1';
-  const result = await this.dataSource.query(query, [loanId]);
-  // NOTE: dataSource.query() (TypeORM) already resolves to the row array
-  // itself, not a `{ rows }` wrapper (that's the pg driver's shape). The
-  // previous `return result.rows;` always returned undefined.
-  return result;
-};
-
-/**
- * Backs GET /gst/api-request-logs?loanId=...
- *
- * Reads public.api_request_logs for the given loanId. Used to fill in the
- * "pending" fields on Operational Status (API Name, Data Source, Retry
- * Count, API Status) and to surface a "Last Updated" timestamp for the
- * Company Summary / Company Details views.
- *
- * The timestamp column is detected dynamically (falls back gracefully if
- * the table only has one of created_at/updated_at, or neither).
- */
-async getApiRequestLogs(params: { loanId?: string; gstin?: string }) {
-  const loanId = params.loanId?.trim();
-  const gstin = params.gstin?.trim();
-
-  if (!loanId && !gstin) {
-    throw new BadRequestException('loanId or gstin is required.');
+      return {
+        loanId,
+        count: data.length,
+        data,
+      };
+    } catch (err) {
+      this.logger.error('Error fetching compliance data', err);
+      throw new InternalServerErrorException('Error fetching data');
+    }
   }
 
-  // Match on loanId OR gstin. Some api_request_logs rows have unreliable/
-  // placeholder associated_loan_id values, but a correctly populated
-  // gst_number — so filtering on loanId alone can silently miss real rows.
-  const conditions: string[] = [];
-  const values: string[] = [];
-
-  if (loanId) {
-    values.push(loanId);
-    conditions.push(`TRIM(associated_loan_id) = TRIM($${values.length})`);
+  async getPrimaryAggregation(loanId: string) {
+    const query =
+      'SELECT * FROM public.primary_gst_aggregation WHERE associated_loan_id = $1';
+    const result = await this.dataSource.query(query, [loanId]);
+    return result;
   }
 
-  if (gstin) {
-    values.push(gstin);
-    conditions.push(`UPPER(TRIM(gst_number)) = UPPER(TRIM($${values.length}))`);
+  async getSecondaryAggregation(loanId: string) {
+    const query =
+      'SELECT * FROM public.secondary_gst_aggregation WHERE associated_loan_id = $1';
+    const result = await this.dataSource.query(query, [loanId]);
+    return result;
   }
 
-  const timestampColumns = await this.dataSource.query<{ column_name: string }[]>(
-    `SELECT column_name FROM information_schema.columns
+  /**
+   * Backs GET /gst/api-request-logs?loanId=...
+   */
+  async getApiRequestLogs(params: { loanId?: string; gstin?: string }) {
+    const loanId = params.loanId?.trim();
+    const gstin = params.gstin?.trim();
+
+    if (!loanId && !gstin) {
+      throw new BadRequestException('loanId or gstin is required.');
+    }
+
+    const conditions: string[] = [];
+    const values: string[] = [];
+
+    if (loanId) {
+      values.push(loanId);
+      conditions.push(`TRIM(associated_loan_id) = TRIM($${values.length})`);
+    }
+
+    if (gstin) {
+      values.push(gstin);
+      conditions.push(
+        `UPPER(TRIM(gst_number)) = UPPER(TRIM($${values.length}))`,
+      );
+    }
+
+    const timestampColumns = await this.dataSource.query<
+      { column_name: string }[]
+    >(
+      `SELECT column_name FROM information_schema.columns
      WHERE table_schema = 'public'
        AND table_name = 'api_request_logs'
        AND column_name IN ('updated_at', 'created_at')`,
-  );
+    );
 
-  const availableColumns = new Set((timestampColumns ?? []).map((c) => c.column_name));
-  const timestampColumn = availableColumns.has('updated_at')
-    ? 'updated_at'
-    : availableColumns.has('created_at')
-    ? 'created_at'
-    : null;
+    const availableColumns = new Set(
+      (timestampColumns ?? []).map((c) => c.column_name),
+    );
+    const timestampColumn = availableColumns.has('updated_at')
+      ? 'updated_at'
+      : availableColumns.has('created_at')
+        ? 'created_at'
+        : null;
 
-  const rows = await this.dataSource.query(
-    `SELECT * FROM public.api_request_logs
+    const rows = await this.dataSource.query(
+      `SELECT * FROM public.api_request_logs
      WHERE ${conditions.join(' OR ')}
      ${timestampColumn ? `ORDER BY "${timestampColumn}" DESC` : 'ORDER BY id DESC'}`,
-    values,
-  );
+      values,
+    );
 
-  const lastUpdatedAt =
-    timestampColumn && rows?.length ? rows[0][timestampColumn] : null;
+    const lastUpdatedAt =
+      timestampColumn && rows?.length ? rows[0][timestampColumn] : null;
 
-  return {
-    loanId: loanId ?? null,
-    gstin: gstin ?? null,
-    count: rows?.length ?? 0,
-    lastUpdatedAt,
-    data: rows ?? [],
-  };
-}
+    return {
+      loanId: loanId ?? null,
+      gstin: gstin ?? null,
+      count: rows?.length ?? 0,
+      lastUpdatedAt,
+      data: rows ?? [],
+    };
+  }
 
-/**
- * Backs GET /gst/customer-gstr-status-counts
- *
- * Aggregates api_request_logs per customer_id for GSTR-1, GSTR-2B, and GSTR-3B.
- * SUCCESS -> updated, FAILED -> failed, missing GSTIN row for a GSTR type -> pending.
- */
-async getCustomerGstrStatusCounts(): Promise<Record<string, CustomerGstrStatusSummary>> {
-  const timestampColumns = await this.dataSource.query<{ column_name: string }[]>(
-    `SELECT column_name FROM information_schema.columns
+  /**
+   * Backs GET /gst/customer-gstr-status-counts
+   */
+  async getCustomerGstrStatusCounts(): Promise<
+    Record<string, CustomerGstrStatusSummary>
+  > {
+    const timestampColumns = await this.dataSource.query<
+      { column_name: string }[]
+    >(
+      `SELECT column_name FROM information_schema.columns
      WHERE table_schema = 'public'
        AND table_name = 'api_request_logs'
        AND column_name IN ('updated_at', 'created_at')`,
-  );
+    );
 
-  const availableColumns = new Set((timestampColumns ?? []).map((c) => c.column_name));
-  const timestampColumn = availableColumns.has('updated_at')
-    ? 'updated_at'
-    : availableColumns.has('created_at')
-    ? 'created_at'
-    : 'id';
+    const availableColumns = new Set(
+      (timestampColumns ?? []).map((c) => c.column_name),
+    );
+    const timestampColumn = availableColumns.has('updated_at')
+      ? 'updated_at'
+      : availableColumns.has('created_at')
+        ? 'created_at'
+        : 'id';
 
-  const customerGstins = await this.dataSource.query<
-    { customer_id: string; gst_number: string }[]
-  >(
-    `SELECT DISTINCT
+    const customerGstins = await this.dataSource.query<
+      { customer_id: string; gst_number: string }[]
+    >(
+      `SELECT DISTINCT
        TRIM(customer_id) AS customer_id,
        UPPER(TRIM(gst_number)) AS gst_number
      FROM public.api_request_logs
@@ -239,12 +236,17 @@ async getCustomerGstrStatusCounts(): Promise<Record<string, CustomerGstrStatusSu
        AND TRIM(customer_id) <> ''
        AND gst_number IS NOT NULL
        AND TRIM(gst_number) <> ''`,
-  );
+    );
 
-  const latestLogs = await this.dataSource.query<
-    { customer_id: string; gst_number: string; gstr_type: string; status: string }[]
-  >(
-    `SELECT DISTINCT ON (
+    const latestLogs = await this.dataSource.query<
+      {
+        customer_id: string;
+        gst_number: string;
+        gstr_type: string;
+        status: string;
+      }[]
+    >(
+      `SELECT DISTINCT ON (
        TRIM(customer_id),
        UPPER(TRIM(gst_number)),
        gstr_type
@@ -264,192 +266,169 @@ async getCustomerGstrStatusCounts(): Promise<Record<string, CustomerGstrStatusSu
        UPPER(TRIM(gst_number)),
        gstr_type,
        "${timestampColumn}" DESC NULLS LAST`,
-  );
-
-  const gstrTypeMap: Record<string, keyof CustomerGstrStatusSummary> = {
-    'GSTR-1': 'GSTR1',
-    'GSTR-2B': 'GSTR2B',
-    'GSTR-3B': 'GSTR3B',
-  };
-
-  const createEmptyCounts = (): GstrStatusCounts => ({
-    updated: 0,
-    pending: 0,
-    failed: 0,
-  });
-
-  const createEmptySummary = (): CustomerGstrStatusSummary => ({
-    GSTR1: createEmptyCounts(),
-    GSTR2B: createEmptyCounts(),
-    GSTR3B: createEmptyCounts(),
-  });
-
-  const gstinsByCustomer = new Map<string, Set<string>>();
-  for (const row of customerGstins ?? []) {
-    if (!gstinsByCustomer.has(row.customer_id)) {
-      gstinsByCustomer.set(row.customer_id, new Set());
-    }
-    gstinsByCustomer.get(row.customer_id)!.add(row.gst_number);
-  }
-
-  const statusByCustomerGstinType = new Map<string, string>();
-  for (const row of latestLogs ?? []) {
-    const summaryKey = gstrTypeMap[row.gstr_type];
-    if (!summaryKey) continue;
-    statusByCustomerGstinType.set(
-      `${row.customer_id}|${row.gst_number}|${summaryKey}`,
-      row.status,
     );
+
+    const gstrTypeMap: Record<string, keyof CustomerGstrStatusSummary> = {
+      'GSTR-1': 'GSTR1',
+      'GSTR-2B': 'GSTR2B',
+      'GSTR-3B': 'GSTR3B',
+    };
+
+    const createEmptyCounts = (): GstrStatusCounts => ({
+      updated: 0,
+      pending: 0,
+      failed: 0,
+    });
+
+    const createEmptySummary = (): CustomerGstrStatusSummary => ({
+      GSTR1: createEmptyCounts(),
+      GSTR2B: createEmptyCounts(),
+      GSTR3B: createEmptyCounts(),
+    });
+
+    const gstinsByCustomer = new Map<string, Set<string>>();
+    for (const row of customerGstins ?? []) {
+      if (!gstinsByCustomer.has(row.customer_id)) {
+        gstinsByCustomer.set(row.customer_id, new Set());
+      }
+      gstinsByCustomer.get(row.customer_id)!.add(row.gst_number);
+    }
+
+    const statusByCustomerGstinType = new Map<string, string>();
+    for (const row of latestLogs ?? []) {
+      const summaryKey = gstrTypeMap[row.gstr_type];
+      if (!summaryKey) continue;
+      statusByCustomerGstinType.set(
+        `${row.customer_id}|${row.gst_number}|${summaryKey}`,
+        row.status,
+      );
+    }
+
+    const result: Record<string, CustomerGstrStatusSummary> = {};
+
+    for (const [customerId, gstins] of gstinsByCustomer) {
+      const summary = createEmptySummary();
+
+      for (const gstrKey of ['GSTR1', 'GSTR2B', 'GSTR3B'] as const) {
+        for (const gstNumber of gstins) {
+          const status = statusByCustomerGstinType.get(
+            `${customerId}|${gstNumber}|${gstrKey}`,
+          );
+
+          if (!status) {
+            summary[gstrKey].pending += 1;
+          } else if (status === 'SUCCESS') {
+            summary[gstrKey].updated += 1;
+          } else if (status === 'FAILED') {
+            summary[gstrKey].failed += 1;
+          } else {
+            summary[gstrKey].pending += 1;
+          }
+        }
+      }
+
+      result[customerId] = summary;
+    }
+
+    return result;
   }
 
-  const result: Record<string, CustomerGstrStatusSummary> = {};
+  async getAggregationTable(
+    loanId: string,
+    type: 'primary' | 'secondary' = 'primary',
+  ): Promise<{ rows: AggregationRow[]; debug: Record<string, unknown> }> {
+    const trimmedLoanId = loanId?.trim();
 
-  for (const [customerId, gstins] of gstinsByCustomer) {
-    const summary = createEmptySummary();
+    if (!trimmedLoanId) {
+      throw new BadRequestException('loanId is required.');
+    }
 
-    for (const gstrKey of ['GSTR1', 'GSTR2B', 'GSTR3B'] as const) {
-      for (const gstNumber of gstins) {
-        const status = statusByCustomerGstinType.get(
-          `${customerId}|${gstNumber}|${gstrKey}`,
-        );
+    const debug: Record<string, unknown> = {
+      receivedLoanId: trimmedLoanId,
+      requestedType: type,
+    };
 
-        if (!status) {
-          summary[gstrKey].pending += 1;
-        } else if (status === 'SUCCESS') {
-          summary[gstrKey].updated += 1;
-        } else if (status === 'FAILED') {
-          summary[gstrKey].failed += 1;
-        } else {
-          summary[gstrKey].pending += 1;
-        }
+    let rows: any[] = [];
+
+    if (type === 'primary') {
+      rows = await this.dataSource.query(
+        'SELECT * FROM public.primary_gst_aggregation WHERE TRIM(associated_loan_id) = TRIM($1)',
+        [trimmedLoanId],
+      );
+      debug.source = 'primary_gst_aggregation';
+    } else {
+      rows = await this.dataSource.query(
+        'SELECT * FROM public.secondary_gst_aggregation WHERE TRIM(associated_loan_id) = TRIM($1)',
+        [trimmedLoanId],
+      );
+      debug.source = 'secondary_gst_aggregation';
+    }
+
+    debug.rowCount = rows?.length ?? 0;
+
+    const result: AggregationRow[] = [];
+    const hasMultipleRows = (rows ?? []).length > 1;
+
+    for (const row of rows ?? []) {
+      const parsed = this.parseAggregationVariable(row.aggregation_variable);
+
+      for (const [key, value] of Object.entries(parsed)) {
+        const outputField =
+          type === 'secondary' && hasMultipleRows && row.customer_id
+            ? `${key} (${row.customer_id})`
+            : key;
+
+        result.push({
+          outputField,
+          output: this.formatOutputValue(value),
+        });
       }
     }
 
-    result[customerId] = summary;
+    debug.parsedEntryCount = result.length;
+
+    return { rows: result, debug };
   }
 
-  return result;
-}
-
-/**  
- * Builds the "Aggregation Table" shown when a user clicks the info (i)
- * icon next to a loan's Associated Loan ID. Combines the primary
- * company's aggregation row with every considered/secondary entity's
- * aggregation row for that loan, and flattens each into
- * { outputField, output } pairs for a simple two-column table.
- */
-async getAggregationTable(
-  loanId: string, 
-  type: 'primary' | 'secondary' = 'primary'
-): Promise<{ rows: AggregationRow[]; debug: Record<string, unknown> }> {
-  const trimmedLoanId = loanId?.trim();
-  
-  if (!trimmedLoanId) {
-    throw new BadRequestException('loanId is required.');
-  } 
-
-  const debug: Record<string, unknown> = {
-    receivedLoanId: trimmedLoanId,
-    requestedType: type,
-  };
-
-  let rows: any[] = [];
-
-  // 1. Query the explicit table requested by the frontend
-  if (type === 'primary') {
-    rows = await this.dataSource.query(
-      'SELECT * FROM public.primary_gst_aggregation WHERE TRIM(associated_loan_id) = TRIM($1)',
-      [trimmedLoanId],
-    );
-    debug.source = 'primary_gst_aggregation';
-  } else {
-    rows = await this.dataSource.query(
-      'SELECT * FROM public.secondary_gst_aggregation WHERE TRIM(associated_loan_id) = TRIM($1)',
-      [trimmedLoanId],
-    );
-    debug.source = 'secondary_gst_aggregation';
-  }
-
-  debug.rowCount = rows?.length ?? 0;
-
-  const result: AggregationRow[] = [];
-  const hasMultipleRows = (rows ?? []).length > 1;
-
-  // 2. Parse and format the data using your existing helper methods
-  for (const row of (rows ?? [])) {
-    // Uses your existing parseAggregationVariable method
-    const parsed = this.parseAggregationVariable(row.aggregation_variable); 
-    
-    for (const [key, value] of Object.entries(parsed)) {
-      // Keep your logic to disambiguate multiple secondary entities using customer_id
-      const outputField = (type === 'secondary' && hasMultipleRows && row.customer_id) 
-        ? `${key} (${row.customer_id})` 
-        : key;
-        
-      result.push({ 
-        outputField, 
-        output: this.formatOutputValue(value) // Uses your existing formatOutputValue method
-      });
+  private formatOutputValue(value: unknown): string {
+    if (value === null || value === undefined) return '—';
+    if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+    if (typeof value === 'object') {
+      try {
+        return JSON.stringify(value);
+      } catch {
+        return String(value);
+      }
     }
+    return String(value);
   }
 
-  debug.parsedEntryCount = result.length;
-  
-  return { rows: result, debug };
-}
+  private parseAggregationVariable(raw: unknown): Record<string, unknown> {
+    if (raw === null || raw === undefined) return {};
 
-private formatOutputValue(value: unknown): string {
-  if (value === null || value === undefined) return '—';
-  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
-  if (typeof value === 'object') {
+    if (typeof raw === 'object') {
+      return raw as Record<string, unknown>;
+    }
+
+    const str = String(raw).trim();
+    if (!str || str === '{}') return {};
+
+    const jsonLike = str
+      .replace(/'/g, '"')
+      .replace(/\bNone\b/g, 'null')
+      .replace(/\bTrue\b/g, 'true')
+      .replace(/\bFalse\b/g, 'false');
+
     try {
-      return JSON.stringify(value);
+      const parsed = JSON.parse(jsonLike);
+      return typeof parsed === 'object' && parsed !== null ? parsed : {};
     } catch {
-      return String(value);
+      this.logger.warn(
+        `Failed to parse aggregation_variable as JSON. Raw (first 200 chars): ${str.slice(0, 200)}`,
+      );
+      return {};
     }
   }
-  return String(value);
-}
-
-/**
- * The `aggregation_variable` column stores a Python-dict-style string, e.g.
- * "{'PRIMARY_TOTAL_GST_COUNT':0,'PRIMARY_ADDRESS_CHANGE':false}" — single
- * quotes instead of double quotes, which makes it invalid JSON as-is.
- * Convert it to valid JSON and parse properly (handles nested
- * objects/arrays correctly, unlike a naive regex would).
- */
-private parseAggregationVariable(raw: unknown): Record<string, unknown> {
-  if (raw === null || raw === undefined) return {};
-
-  if (typeof raw === 'object') {
-    // Already parsed (e.g. if the column type is json/jsonb instead of text).
-    return raw as Record<string, unknown>;
-  }
-
-  const str = String(raw).trim();
-  if (!str || str === '{}') return {};
-
-  // Convert Python-dict-literal syntax to valid JSON:
-  // single quotes -> double quotes, None/True/False -> null/true/false.
-  // This is a best-effort textual conversion (it does not attempt to
-  // preserve apostrophes inside string values); it works for this
-  // pipeline's generated data, which never contains embedded quotes.
-  const jsonLike = str
-    .replace(/'/g, '"')
-    .replace(/\bNone\b/g, 'null')
-    .replace(/\bTrue\b/g, 'true')
-    .replace(/\bFalse\b/g, 'false');
-
-  try {
-    const parsed = JSON.parse(jsonLike);
-    return typeof parsed === 'object' && parsed !== null ? parsed : {};
-  } catch (err) {
-    this.logger.warn(
-      `Failed to parse aggregation_variable as JSON. Raw (first 200 chars): ${str.slice(0, 200)}`,
-    );
-    return {};
-  }
-}
 
   async getTableData(rawTableName: string, page = 1, limit = 50) {
     const tableName = this.sanitizeIdentifier(rawTableName);
@@ -494,71 +473,254 @@ private parseAggregationVariable(raw: unknown): Record<string, unknown> {
         data: rows,
       };
     } catch (err) {
-      this.logger.error(`Failed to fetch data from "${tableName}"`, err as Error);
+      this.logger.error(
+        `Failed to fetch data from "${tableName}"`,
+        err as Error,
+      );
       throw new InternalServerErrorException(
         `Failed to fetch data: ${(err as Error).message}`,
       );
     }
   }
 
-  async processExcel(buffer: Buffer, rawTableName: string) {
+  getDebugConnectionInfo() {
+    const opts = this.dataSource.options as any;
+    return {
+      type: opts.type,
+      database: opts.database,
+      host: opts.host,
+      port: opts.port,
+      schema: opts.schema ?? 'public',
+    };
+  }
+
+
+  // ------------------ Job Tracking Helpers ------------------
+
+  async createJob(type: JobType, metadata: Record<string, any>): Promise<Job> {
+    const job = this.jobRepo.create({
+      type,
+      status: 'PENDING',
+      metadata,
+    });
+    return this.jobRepo.save(job);
+  }
+
+  async getJobStatus(jobId: string): Promise<Job | null> {
+    return this.jobRepo.findOne({
+      where: { id: jobId },
+      relations: { tasks: true },
+    });
+  }
+
+  async updateJobStatus(
+    jobId: string,
+    status: JobStatus,
+    errorMessage?: string,
+  ): Promise<void> {
+    await this.jobRepo.update(jobId, { status, errorMessage });
+    this.logger.log(`Job ${jobId} status updated to ${status}`);
+  }
+
+  async setJobTotalChunks(jobId: string, totalChunks: number): Promise<void> {
+    await this.jobRepo.update(jobId, { totalChunks });
+  }
+
+  async setJobProgress(jobId: string, completedChunks: number): Promise<void> {
+    await this.jobRepo.update(jobId, { completedChunks });
+  }
+
+  async finishJob(
+    jobId: string,
+    metadata: Record<string, any>,
+  ): Promise<void> {
+    const job = await this.jobRepo.findOne({ where: { id: jobId } });
+    await this.jobRepo.update(jobId, {
+      status: 'COMPLETED',
+      metadata: { ...(job?.metadata ?? {}), ...metadata },
+    });
+    this.logger.log(`Job ${jobId} completed`);
+  }
+
+  /** Merge a partial object into the job's existing metadata. */
+  async mergeJobMetadata(
+    jobId: string,
+    patch: Record<string, any>,
+  ): Promise<void> {
+    const job = await this.jobRepo.findOne({ where: { id: jobId } });
+    await this.jobRepo.update(jobId, {
+      metadata: { ...(job?.metadata ?? {}), ...patch },
+    });
+  }
+
+  // ------------------ Task Helpers ------------------
+
+  async createTask(
+    jobId: string,
+    payload: Record<string, any>,
+  ): Promise<JobTask> {
+    const task = this.taskRepo.create({ jobId, status: 'PENDING', payload });
+    return this.taskRepo.save(task);
+  }
+
+  async getJobTasks(jobId: string): Promise<JobTask[]> {
+    return this.taskRepo.find({ where: { jobId } });
+  }
+
+  /** Update a task's status and merge a result object into its payload. */
+  async markTask(
+    taskId: string,
+    status: TaskStatus,
+    patch: {
+      result?: Record<string, any>;
+      errorMessage?: string;
+      attempts?: number;
+    } = {},
+  ): Promise<void> {
+    const task = await this.taskRepo.findOne({ where: { id: taskId } });
+    const payload = { ...(task?.payload ?? {}) };
+    if (patch.result !== undefined) payload.result = patch.result;
+
+    await this.taskRepo.update(taskId, {
+      status,
+      payload,
+      ...(patch.errorMessage !== undefined
+        ? { errorMessage: patch.errorMessage }
+        : {}),
+      ...(patch.attempts !== undefined ? { attempts: patch.attempts } : {}),
+    });
+  }
+
+  /**
+   * Atomically increment completedChunks and report whether this call was the
+   * one that completed the job (race-safe across concurrent workers).
+   */
+  async incrementCompletedChunks(
+    jobId: string,
+  ): Promise<{ completed: number; total: number; justCompleted: boolean }> {
+    const result = await this.jobRepo
+      .createQueryBuilder()
+      .update(Job)
+      .set({ completedChunks: () => '"completedChunks" + 1' })
+      .where('id = :id', { id: jobId })
+      .returning(['completedChunks', 'totalChunks'])
+      .execute();
+
+    const raw = (result.raw?.[0] ?? {}) as Record<string, any>;
+    const completed = Number(raw.completedChunks ?? raw.completedchunks ?? 0);
+    const total = Number(raw.totalChunks ?? raw.totalchunks ?? 0);
+    const justCompleted = total > 0 && completed === total;
+    return { completed, total, justCompleted };
+  }
+
+  // ------------------ Asynchronous Workers ------------------
+
+  /**
+   * Worker method to process Excel/CSV import from disk (append or migrate schema).
+   */
+  async processExcel(filePath: string, rawTableName: string, jobId: string) {
+    await this.jobRepo.update(jobId, { status: 'PROCESSING' });
     const tableName = this.sanitizeIdentifier(rawTableName);
 
-    const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: true });
-    const sheetName = workbook.SheetNames[0];
-    if (!sheetName) {
-      throw new BadRequestException('Excel file contains no sheets.');
-    }
-    const sheet = workbook.Sheets[sheetName];
+    try {
+      if (!fs.existsSync(filePath)) {
+        throw new Error(`Cached file not found at path: ${filePath}`);
+      }
 
-    const rows: Record<string, unknown>[] = XLSX.utils.sheet_to_json(sheet, {
-      defval: null,
-      raw: true,
-    });
+      const job = await this.jobRepo.findOne({ where: { id: jobId } });
+      const meta = (job?.metadata ?? {}) as {
+        originalName?: string;
+        mimetype?: string;
+      };
+      const originalName = meta.originalName ?? filePath;
+      const mimetype = meta.mimetype;
+      const isCsv = this.isCsvFile(originalName, mimetype);
 
-    if (rows.length === 0) {
-      throw new BadRequestException(
-        'Excel sheet is empty. Need at least one data row.',
-      );
-    }
+      const buffer = fs.readFileSync(filePath);
+      const workbook = isCsv
+        ? XLSX.read(buffer.toString('utf8'), { type: 'string', cellDates: true })
+        : XLSX.read(buffer, { type: 'buffer', cellDates: true });
+      const sheetName = workbook.SheetNames[0];
+      if (!sheetName) {
+        throw new BadRequestException('Uploaded file contains no sheets.');
+      }
+      const sheet = workbook.Sheets[sheetName];
 
-    const headerSet = new Set<string>();
-    for (const row of rows) {
-      Object.keys(row).forEach((k) => headerSet.add(k));
-    }
-    const rawHeaders = Array.from(headerSet);
-    if (rawHeaders.length === 0) {
-      throw new BadRequestException('No columns detected in the Excel sheet.');
-    }
+      const rows: Record<string, unknown>[] = XLSX.utils.sheet_to_json(sheet, {
+        defval: null,
+        raw: !isCsv,
+      });
 
-    const columns: ColumnDef[] = rawHeaders.map((header) => ({
-      raw: header,
-      name: this.sanitizeIdentifier(header),
-      type: this.inferColumnType(rows, header),
-    }));
-
-    const seen = new Set<string>();
-    for (const col of columns) {
-      if (seen.has(col.name)) {
+      if (rows.length === 0) {
         throw new BadRequestException(
-          `Duplicate column name "${col.name}" after sanitization. Rename headers in Excel.`,
+          'Uploaded sheet is empty. Need at least one data row.',
         );
       }
-      seen.add(col.name);
-    }
 
+      const headerSet = new Set<string>();
+      for (const row of rows) {
+        Object.keys(row).forEach((k) => headerSet.add(k));
+      }
+      const rawHeaders = Array.from(headerSet);
+      if (rawHeaders.length === 0) {
+        throw new BadRequestException('No columns detected in the uploaded file.');
+      }
+
+      const columns: ColumnDef[] = rawHeaders.map((header) => ({
+        raw: header,
+        name: this.sanitizeIdentifier(header),
+        type: this.inferColumnType(rows, header),
+      }));
+
+      const seen = new Set<string>();
+      for (const col of columns) {
+        if (seen.has(col.name)) {
+          throw new BadRequestException(
+            `Duplicate column name "${col.name}" after sanitization. Rename headers in the file.`,
+          );
+        }
+        seen.add(col.name);
+      }
+
+      await this.jobRepo.update(jobId, { totalChunks: 1 });
+
+      const rowsInserted = await this.appendRowsToTable(tableName, rows, columns);
+
+      const completedMetadata: Record<string, any> = {
+        ...meta,
+        rowsInserted,
+        sheet: sheetName,
+      };
+      await this.jobRepo.update(jobId, {
+        status: 'COMPLETED',
+        completedChunks: 1,
+        metadata: completedMetadata,
+      });
+    } catch (err) {
+      await this.updateJobStatus(jobId, 'FAILED', (err as Error).message);
+      throw err;
+    } finally {
+      await this.fileStorageService.deleteFile(filePath);
+    }
+  }
+
+  // ------------------ DB import (append / schema migrate) ------------------
+
+  private async appendRowsToTable(
+    tableName: string,
+    rows: Record<string, unknown>[],
+    columns: ColumnDef[],
+  ): Promise<number> {
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
 
+    const insertColumns: ColumnDef[] = columns.map((c) => ({ ...c }));
+
     try {
-      await queryRunner.query(`DROP TABLE IF EXISTS "${tableName}"`);
+      await this.ensureTableSchema(queryRunner, tableName, insertColumns);
 
-      const createSql = this.buildCreateTableSql(tableName, columns);
-      this.logger.log(`Creating table: ${createSql}`);
-      await queryRunner.query(createSql);
-
-      const colList = columns.map((c) => `"${c.name}"`).join(', ');
+      const colList = insertColumns.map((c) => `"${c.name}"`).join(', ');
       const batchSize = 500;
       let inserted = 0;
 
@@ -569,7 +731,7 @@ private parseAggregationVariable(raw: unknown): Record<string, unknown> {
 
         for (const row of batch) {
           const rowPlaceholders: string[] = [];
-          for (const col of columns) {
+          for (const col of insertColumns) {
             rowPlaceholders.push(`$${params.length + 1}`);
             params.push(this.coerceValue(row[col.raw], col.type));
           }
@@ -582,36 +744,131 @@ private parseAggregationVariable(raw: unknown): Record<string, unknown> {
       }
 
       await queryRunner.commitTransaction();
-
-      return {
-        message: 'Excel uploaded successfully. Dashboard data has been updated.',
-        table: tableName,
-        sheet: sheetName,
-        columns: columns.map(({ raw, name, type }) => ({ raw, name, type })),
-        rowsInserted: inserted,
-      };
+      return inserted;
     } catch (err) {
       await queryRunner.rollbackTransaction();
-      this.logger.error('Failed to process Excel', err as Error);
-      throw new InternalServerErrorException(
-        `Failed to process Excel: ${(err as Error).message}`,
-      );
+      throw err;
     } finally {
       await queryRunner.release();
     }
   }
 
-  // TEMP DEBUG — remove once the empty-result issue is resolved.
-  getDebugConnectionInfo() {
-    const opts = this.dataSource.options as any;
-    return {
-      type: opts.type,
-      database: opts.database,
-      host: opts.host,
-      port: opts.port,
-      schema: opts.schema ?? 'public',
-    };
+  private async ensureTableSchema(
+    queryRunner: QueryRunner,
+    tableName: string,
+    insertColumns: ColumnDef[],
+  ): Promise<void> {
+    const tableExists = await this.tableExists(queryRunner, tableName);
+
+    if (!tableExists) {
+      const createSql = this.buildCreateTableSql(tableName, insertColumns);
+      this.logger.log(`Creating table: ${createSql}`);
+      await queryRunner.query(createSql);
+      return;
+    }
+
+    const existingCols = await this.getExistingColumnTypes(queryRunner, tableName);
+
+    for (const col of insertColumns) {
+      const existingType = existingCols.get(col.name);
+
+      if (existingType === undefined) {
+        const alterSql = `ALTER TABLE "${tableName}" ADD COLUMN "${col.name}" ${col.type} NULL`;
+        this.logger.log(`Adding column: ${alterSql}`);
+        await queryRunner.query(alterSql);
+        continue;
+      }
+
+      const mergedType = this.mergeType(existingType, col.type);
+      if (mergedType !== existingType) {
+        const alterSql = `ALTER TABLE "${tableName}" ALTER COLUMN "${col.name}" TYPE ${mergedType} USING "${col.name}"::${this.pgCastTarget(mergedType)}`;
+        this.logger.log(`Widening column: ${alterSql}`);
+        await queryRunner.query(alterSql);
+      }
+      col.type = mergedType;
+    }
   }
+
+  private async tableExists(
+    queryRunner: QueryRunner,
+    tableName: string,
+  ): Promise<boolean> {
+    const result: Array<{ exists: boolean }> = await queryRunner.query(
+      `SELECT EXISTS (
+         SELECT 1 FROM information_schema.tables
+         WHERE table_schema = current_schema() AND table_name = $1
+       ) AS "exists"`,
+      [tableName],
+    );
+    return Boolean(result?.[0]?.exists);
+  }
+
+  private async getExistingColumnTypes(
+    queryRunner: QueryRunner,
+    tableName: string,
+  ): Promise<Map<string, PgType>> {
+    const rows: Array<{ column_name: string; data_type: string }> =
+      await queryRunner.query(
+        `SELECT column_name, data_type FROM information_schema.columns
+         WHERE table_schema = current_schema() AND table_name = $1`,
+        [tableName],
+      );
+    const map = new Map<string, PgType>();
+    for (const r of rows) {
+      map.set(r.column_name, this.mapPgDataType(r.data_type));
+    }
+    return map;
+  }
+
+  private mapPgDataType(dataType: string): PgType {
+    const t = dataType.toLowerCase();
+    if (
+      t === 'integer' ||
+      t === 'smallint' ||
+      t === 'bigint' ||
+      t === 'serial' ||
+      t === 'bigserial'
+    )
+      return 'INTEGER';
+    if (
+      t === 'numeric' ||
+      t === 'decimal' ||
+      t === 'real' ||
+      t === 'double precision'
+    )
+      return 'NUMERIC';
+    if (t.startsWith('timestamp') || t === 'date') return 'TIMESTAMP';
+    if (t === 'boolean') return 'BOOLEAN';
+    return 'TEXT';
+  }
+
+  private mergeType(a: PgType, b: PgType): PgType {
+    if (a === b) return a;
+    if (
+      (a === 'INTEGER' && b === 'NUMERIC') ||
+      (a === 'NUMERIC' && b === 'INTEGER')
+    )
+      return 'NUMERIC';
+    return 'TEXT';
+  }
+
+  private pgCastTarget(type: PgType): string {
+    switch (type) {
+      case 'INTEGER':
+        return 'integer';
+      case 'NUMERIC':
+        return 'numeric';
+      case 'TIMESTAMP':
+        return 'timestamp';
+      case 'BOOLEAN':
+        return 'boolean';
+      case 'TEXT':
+      default:
+        return 'text';
+    }
+  }
+
+  // ----------------------- helpers -----------------------
 
   private sanitizeIdentifier(name: string): string {
     const cleaned = String(name ?? '')
@@ -642,16 +899,30 @@ private parseAggregationVariable(raw: unknown): Record<string, unknown> {
       if (v === null || v === undefined || v === '') continue;
       hasValue = true;
 
-      if (typeof v !== 'boolean') allBool = false;
+      const boolStr =
+        typeof v === 'string' && ['true', 'false'].includes(v.toLowerCase());
+      if (typeof v !== 'boolean' && !boolStr) allBool = false;
 
+      let asNumber: number | null = null;
       if (typeof v === 'number' && Number.isFinite(v)) {
-        if (!Number.isInteger(v)) allInt = false;
-      } else {
+        asNumber = v;
+      } else if (typeof v === 'string' && v.trim() !== '') {
+        const n = Number(v);
+        if (Number.isFinite(n)) asNumber = n;
+      }
+      if (asNumber === null) {
         allInt = false;
         allNumber = false;
+      } else if (!Number.isInteger(asNumber)) {
+        allInt = false;
       }
 
-      if (!(v instanceof Date)) {
+      if (v instanceof Date) {
+        // ok
+      } else if (typeof v === 'string') {
+        const d = new Date(v);
+        if (Number.isNaN(d.getTime())) allDate = false;
+      } else {
         allDate = false;
       }
     }
@@ -662,6 +933,16 @@ private parseAggregationVariable(raw: unknown): Record<string, unknown> {
     if (allNumber) return 'NUMERIC';
     if (allDate) return 'TIMESTAMP';
     return 'TEXT';
+  }
+
+  private isCsvFile(
+    originalName: string | undefined,
+    mimetype: string | undefined,
+  ): boolean {
+    const ext = (originalName || '').toLowerCase().split('.').pop();
+    if (ext === 'csv') return true;
+    const csvMimes = ['text/csv', 'application/csv'];
+    return !!mimetype && csvMimes.includes(mimetype);
   }
 
   private coerceValue(value: unknown, type: PgType): unknown {
@@ -678,21 +959,21 @@ private parseAggregationVariable(raw: unknown): Record<string, unknown> {
         const d = new Date(String(value));
         return Number.isNaN(d.getTime()) ? null : d.toISOString();
       }
-      case 'BOOLEAN':
+      case 'BOOLEAN': {
+        if (typeof value === 'boolean') return value;
+        const s = String(value).trim().toLowerCase();
+        if (['true', '1', 'yes', 'y'].includes(s)) return true;
+        if (['false', '0', 'no', 'n'].includes(s)) return false;
         return Boolean(value);
+      }
       case 'TEXT':
       default:
         return String(value);
     }
   }
 
-  private buildCreateTableSql(
-    tableName: string,
-    columns: ColumnDef[],
-  ): string {
-    const cols = columns
-      .map((c) => `"${c.name}" ${c.type} NULL`)
-      .join(', ');
+  private buildCreateTableSql(tableName: string, columns: ColumnDef[]): string {
+    const cols = columns.map((c) => `"${c.name}" ${c.type} NULL`).join(', ');
     return `CREATE TABLE "${tableName}" (id SERIAL PRIMARY KEY, ${cols})`;
   }
 }

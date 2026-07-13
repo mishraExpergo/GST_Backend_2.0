@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
@@ -5,7 +6,8 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { toNumber } from './config/database.config';
-import { GstModule } from './modules/gst/gst.module.js';
+import { GstModule } from './modules/gst/gst.module';
+import { AuthModule } from './auth/auth.module';
 
 const enableMongo = process.env.ENABLE_MONGO === 'true';
 
@@ -34,17 +36,17 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
         password: configService.getOrThrow<string>('POSTGRES_PASSWORD'),
         database: configService.getOrThrow<string>('POSTGRES_DB'),
         autoLoadEntities: true,
-        synchronize: configService.get<string>('POSTGRES_SYNC', 'false') === 'true',
         ssl:
           configService.get<string>('POSTGRES_SSL', 'false') === 'true'
             ? { rejectUnauthorized: false }
             : false,
+        synchronize: configService.get<string>('POSTGRES_SYNC', 'false') === 'true',
       }),
     }),
     GstModule,
+    AuthModule,
   ],
   controllers: [AppController],
   providers: [AppService],
 })
 export class AppModule {}
-

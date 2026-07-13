@@ -1,0 +1,406 @@
+import { Gstr2bComplianceRecord } from '../schemas/gst-gstr2b-compliance.schema';
+
+export interface PrimaryGstr2bAggregationMetrics {
+  PRIMARY_TOTAL_SUPPLIER_COUNT: number;
+  PRIMARY_SUPPLIER_TOTAL_ELIGIBLE_ITC: number;
+  PRIMARY_SUPPLIER_TOTAL_INELIGIBLE_ITC: number;
+  PRIMARY_SUPPLIER_TOTAL_REVERSED_ITC: number;
+  PRIMARY_SUPPLIER_IGST_ITC: number;
+  PRIMARY_SUPPLIER_CGST_ITC: number;
+  PRIMARY_SUPPLIER_SGST_ITC: number;
+  PRIMARY_SUPPLIER_CESS_ITC: number;
+  PRIMARY_TOTAL_INVOICE_COUNT: number;
+  PRIMARY_ELIGIBLE_INVOICE_COUNT: number;
+  PRIMARY_INELIGIBLE_INVOICE_COUNT: number;
+}
+
+export interface SecondaryGstr2bAggregationMetrics {
+  CONSIDERED_TOTAL_SUPPLIER_COUNT: number;
+  CONSIDERED_SUPPLIER_TOTAL_INELIGIBLE_ITC: number;
+  CONSIDERED_SUPPLIER_TOTAL_REVERSED_ITC: number;
+  CONSIDERED_SUPPLIER_TOTAL_ELIGIBLE_ITC: number;
+  CONSIDERED_SUPPLIER_TOTAL_INVOICE_COUNT: number;
+  CONSIDERED_SUPPLIER_ELIGIBLE_INVOICE_COUNT: number;
+  CONSIDERED_SUPPLIER_INELIGIBLE_INVOICE_COUNT: number;
+  CONSIDERED_SUPPLIER_IGST_ITC: number;
+  CONSIDERED_SUPPLIER_CGST_ITC: number;
+  CONSIDERED_SUPPLIER_SGST_ITC: number;
+  CONSIDERED_SUPPLIER_CESS_ITC: number;
+}
+
+export const PRIMARY_GSTR2B_METRIC_KEYS = [
+  'PRIMARY_TOTAL_SUPPLIER_COUNT',
+  'PRIMARY_SUPPLIER_TOTAL_ELIGIBLE_ITC',
+  'PRIMARY_SUPPLIER_TOTAL_INELIGIBLE_ITC',
+  'PRIMARY_SUPPLIER_TOTAL_REVERSED_ITC',
+  'PRIMARY_SUPPLIER_IGST_ITC',
+  'PRIMARY_SUPPLIER_CGST_ITC',
+  'PRIMARY_SUPPLIER_SGST_ITC',
+  'PRIMARY_SUPPLIER_CESS_ITC',
+  'PRIMARY_TOTAL_INVOICE_COUNT',
+  'PRIMARY_ELIGIBLE_INVOICE_COUNT',
+  'PRIMARY_INELIGIBLE_INVOICE_COUNT',
+] as const;
+
+export const SECONDARY_GSTR2B_METRIC_KEYS = [
+  'CONSIDERED_TOTAL_SUPPLIER_COUNT',
+  'CONSIDERED_SUPPLIER_TOTAL_INELIGIBLE_ITC',
+  'CONSIDERED_SUPPLIER_TOTAL_REVERSED_ITC',
+  'CONSIDERED_SUPPLIER_TOTAL_ELIGIBLE_ITC',
+  'CONSIDERED_SUPPLIER_TOTAL_INVOICE_COUNT',
+  'CONSIDERED_SUPPLIER_ELIGIBLE_INVOICE_COUNT',
+  'CONSIDERED_SUPPLIER_INELIGIBLE_INVOICE_COUNT',
+  'CONSIDERED_SUPPLIER_IGST_ITC',
+  'CONSIDERED_SUPPLIER_CGST_ITC',
+  'CONSIDERED_SUPPLIER_SGST_ITC',
+  'CONSIDERED_SUPPLIER_CESS_ITC',
+] as const;
+
+interface InvoiceMetricFact {
+  supplierGstin: string | null;
+  invoiceNumber: string | null;
+  itcEligibility: 'ELIGIBLE' | 'INELIGIBLE' | null;
+  eligibleItc: number;
+  ineligibleItc: number;
+  itcReversed: number;
+  igstItc: number;
+  cgstItc: number;
+  sgstItc: number;
+  cessItc: number;
+}
+
+interface TraversalContext {
+  supplierGstin: string | null;
+  invoiceNumber: string | null;
+  itcEligibility: 'ELIGIBLE' | 'INELIGIBLE' | null;
+}
+
+export function normalizePan(pan: string | null | undefined): string | null {
+  const normalized = (pan ?? '').trim().toUpperCase();
+  return normalized || null;
+}
+
+export function getGstr2bRecordPan(
+  record: Gstr2bComplianceRecord | Record<string, any>,
+): string | null {
+  const pan = normalizePan(record.pan);
+  if (pan) {
+    return pan;
+  }
+
+  const gstin = String(record.gstin ?? record.gstNo ?? '')
+    .trim()
+    .toUpperCase();
+  if (gstin.length >= 12) {
+    return gstin.substring(2, 12);
+  }
+  return null;
+}
+
+export function getGstr2bRecordsForPan(
+  records: Array<Gstr2bComplianceRecord | Record<string, any>>,
+  pan: string,
+): Array<Gstr2bComplianceRecord | Record<string, any>> {
+  return records.filter((record) => getGstr2bRecordPan(record) === pan);
+}
+
+export function computePrimaryGstr2bAggregationMetrics(
+  records: Array<Gstr2bComplianceRecord | Record<string, any>>,
+): PrimaryGstr2bAggregationMetrics {
+  const summary = computePanSummary(records);
+  return {
+    PRIMARY_TOTAL_SUPPLIER_COUNT: summary.totalSupplierCount,
+    PRIMARY_SUPPLIER_TOTAL_ELIGIBLE_ITC: summary.totalEligibleItc,
+    PRIMARY_SUPPLIER_TOTAL_INELIGIBLE_ITC: summary.totalIneligibleItc,
+    PRIMARY_SUPPLIER_TOTAL_REVERSED_ITC: summary.totalReversedItc,
+    PRIMARY_SUPPLIER_IGST_ITC: summary.igstItc,
+    PRIMARY_SUPPLIER_CGST_ITC: summary.cgstItc,
+    PRIMARY_SUPPLIER_SGST_ITC: summary.sgstItc,
+    PRIMARY_SUPPLIER_CESS_ITC: summary.cessItc,
+    PRIMARY_TOTAL_INVOICE_COUNT: summary.totalInvoiceCount,
+    PRIMARY_ELIGIBLE_INVOICE_COUNT: summary.eligibleInvoiceCount,
+    PRIMARY_INELIGIBLE_INVOICE_COUNT: summary.ineligibleInvoiceCount,
+  };
+}
+
+export function computeSecondaryGstr2bAggregationMetrics(
+  records: Array<Gstr2bComplianceRecord | Record<string, any>>,
+): SecondaryGstr2bAggregationMetrics {
+  const summary = computePanSummary(records);
+  return {
+    CONSIDERED_TOTAL_SUPPLIER_COUNT: summary.totalSupplierCount,
+    CONSIDERED_SUPPLIER_TOTAL_INELIGIBLE_ITC: summary.totalIneligibleItc,
+    CONSIDERED_SUPPLIER_TOTAL_REVERSED_ITC: summary.totalReversedItc,
+    CONSIDERED_SUPPLIER_TOTAL_ELIGIBLE_ITC: summary.totalEligibleItc,
+    CONSIDERED_SUPPLIER_TOTAL_INVOICE_COUNT: summary.totalInvoiceCount,
+    CONSIDERED_SUPPLIER_ELIGIBLE_INVOICE_COUNT: summary.eligibleInvoiceCount,
+    CONSIDERED_SUPPLIER_INELIGIBLE_INVOICE_COUNT: summary.ineligibleInvoiceCount,
+    CONSIDERED_SUPPLIER_IGST_ITC: summary.igstItc,
+    CONSIDERED_SUPPLIER_CGST_ITC: summary.cgstItc,
+    CONSIDERED_SUPPLIER_SGST_ITC: summary.sgstItc,
+    CONSIDERED_SUPPLIER_CESS_ITC: summary.cessItc,
+  };
+}
+
+function computePanSummary(
+  records: Array<Gstr2bComplianceRecord | Record<string, any>>,
+): {
+  totalSupplierCount: number;
+  totalEligibleItc: number;
+  totalIneligibleItc: number;
+  totalReversedItc: number;
+  igstItc: number;
+  cgstItc: number;
+  sgstItc: number;
+  cessItc: number;
+  totalInvoiceCount: number;
+  eligibleInvoiceCount: number;
+  ineligibleInvoiceCount: number;
+} {
+  const facts = records.flatMap((record) =>
+    extractInvoiceFacts(record.gstr2bResponse ?? record),
+  );
+
+  const suppliers = new Set<string>();
+  const invoices = new Set<string>();
+  const eligibleInvoices = new Set<string>();
+  const ineligibleInvoices = new Set<string>();
+
+  let totalEligibleItc = 0;
+  let totalIneligibleItc = 0;
+  let totalReversedItc = 0;
+  let igstItc = 0;
+  let cgstItc = 0;
+  let sgstItc = 0;
+  let cessItc = 0;
+
+  for (const fact of facts) {
+    if (fact.supplierGstin) suppliers.add(fact.supplierGstin);
+    if (fact.invoiceNumber) invoices.add(fact.invoiceNumber);
+    if (fact.invoiceNumber && fact.itcEligibility === 'ELIGIBLE') {
+      eligibleInvoices.add(fact.invoiceNumber);
+    }
+    if (fact.invoiceNumber && fact.itcEligibility === 'INELIGIBLE') {
+      ineligibleInvoices.add(fact.invoiceNumber);
+    }
+
+    totalEligibleItc += fact.eligibleItc;
+    totalIneligibleItc += fact.ineligibleItc;
+    totalReversedItc += fact.itcReversed;
+    igstItc += fact.igstItc;
+    cgstItc += fact.cgstItc;
+    sgstItc += fact.sgstItc;
+    cessItc += fact.cessItc;
+  }
+
+  return {
+    totalSupplierCount: suppliers.size,
+    totalEligibleItc: round2(totalEligibleItc),
+    totalIneligibleItc: round2(totalIneligibleItc),
+    totalReversedItc: round2(totalReversedItc),
+    igstItc: round2(igstItc),
+    cgstItc: round2(cgstItc),
+    sgstItc: round2(sgstItc),
+    cessItc: round2(cessItc),
+    totalInvoiceCount: invoices.size,
+    eligibleInvoiceCount: eligibleInvoices.size,
+    ineligibleInvoiceCount: ineligibleInvoices.size,
+  };
+}
+
+function extractInvoiceFacts(payload: Record<string, any>): InvoiceMetricFact[] {
+  const facts: InvoiceMetricFact[] = [];
+
+  const visit = (node: unknown, context: TraversalContext): void => {
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        visit(item, context);
+      }
+      return;
+    }
+    if (!node || typeof node !== 'object') {
+      return;
+    }
+
+    const obj = node as Record<string, any>;
+    const supplierGstin =
+      normalizeGstin(
+        pickString(
+          obj,
+          'supplierGstin',
+          'supplier_gstin',
+          'supplierGSTIN',
+          'ctin',
+          'gstin',
+        ),
+      ) ?? context.supplierGstin;
+
+    const invoiceNumber =
+      normalizeInvoiceNumber(
+        pickString(
+          obj,
+          'invoiceNumber',
+          'invoice_number',
+          'invoice_no',
+          'inum',
+          'inv_num',
+        ),
+      ) ?? context.invoiceNumber;
+
+    const eligibility =
+      normalizeEligibility(
+        pickString(
+          obj,
+          'itcEligibility',
+          'itc_eligibility',
+          'itc_avl',
+          'eligibility',
+          'itc_status',
+        ),
+      ) ?? context.itcEligibility;
+
+    const eligibleItc = pickNumber(
+      obj,
+      'eligibleItc',
+      'eligible_itc',
+      'itc_eligible',
+      'elg_itc',
+      'eligible',
+    );
+    const ineligibleItc = pickNumber(
+      obj,
+      'ineligibleItc',
+      'ineligible_itc',
+      'itc_ineligible',
+      'inelig_itc',
+      'ineligible',
+    );
+    const reversedItc = pickNumber(
+      obj,
+      'itcReversed',
+      'itc_reversed',
+      'reversed_itc',
+      'reversal',
+    );
+
+    let igst = pickNumber(obj, 'igst', 'igstItc', 'igst_itc', 'iamt');
+    let cgst = pickNumber(obj, 'cgst', 'cgstItc', 'cgst_itc', 'camt');
+    let sgst = pickNumber(obj, 'sgst', 'sgstItc', 'sgst_itc', 'samt');
+    let cess = pickNumber(obj, 'cess', 'cessItc', 'cess_itc', 'csamt');
+
+    const taxType = String(
+      pickString(obj, 'taxType', 'tax_type', 'type', 'itc_type') ?? '',
+    )
+      .trim()
+      .toUpperCase();
+    const taxAmount = pickNumber(
+      obj,
+      'itcSummaryAmount',
+      'itc_summary_amount',
+      'amount',
+      'amt',
+      'value',
+    );
+    if (taxType && taxAmount) {
+      if (taxType === 'IGST') igst += taxAmount;
+      else if (taxType === 'CGST') cgst += taxAmount;
+      else if (taxType === 'SGST') sgst += taxAmount;
+      else if (taxType === 'CESS') cess += taxAmount;
+    }
+
+    if (
+      supplierGstin ||
+      invoiceNumber ||
+      eligibility ||
+      eligibleItc ||
+      ineligibleItc ||
+      reversedItc ||
+      igst ||
+      cgst ||
+      sgst ||
+      cess
+    ) {
+      facts.push({
+        supplierGstin,
+        invoiceNumber,
+        itcEligibility: eligibility,
+        eligibleItc,
+        ineligibleItc,
+        itcReversed: reversedItc,
+        igstItc: igst,
+        cgstItc: cgst,
+        sgstItc: sgst,
+        cessItc: cess,
+      });
+    }
+
+    const nextContext: TraversalContext = {
+      supplierGstin,
+      invoiceNumber,
+      itcEligibility: eligibility,
+    };
+    for (const value of Object.values(obj)) {
+      if (value && typeof value === 'object') {
+        visit(value, nextContext);
+      }
+    }
+  };
+
+  visit(payload, {
+    supplierGstin: null,
+    invoiceNumber: null,
+    itcEligibility: null,
+  });
+
+  return facts;
+}
+
+function pickString(obj: Record<string, any>, ...keys: string[]): string | null {
+  for (const key of keys) {
+    const value = obj[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function pickNumber(obj: Record<string, any>, ...keys: string[]): number {
+  for (const key of keys) {
+    const value = obj[key];
+    if (value === null || value === undefined || value === '') {
+      continue;
+    }
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) {
+      return numeric;
+    }
+  }
+  return 0;
+}
+
+function normalizeGstin(raw: string | null): string | null {
+  if (!raw) return null;
+  const gstin = raw.trim().toUpperCase();
+  return gstin || null;
+}
+
+function normalizeInvoiceNumber(raw: string | null): string | null {
+  if (!raw) return null;
+  return raw.trim().toUpperCase() || null;
+}
+
+function normalizeEligibility(raw: string | null): 'ELIGIBLE' | 'INELIGIBLE' | null {
+  if (!raw) return null;
+  const value = raw.trim().toUpperCase();
+  if (!value) return null;
+  if (value.includes('INELIGIBLE')) return 'INELIGIBLE';
+  if (value.includes('ELIGIBLE')) return 'ELIGIBLE';
+  if (value === 'Y' || value === 'YES') return 'ELIGIBLE';
+  if (value === 'N' || value === 'NO') return 'INELIGIBLE';
+  return null;
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
+}
