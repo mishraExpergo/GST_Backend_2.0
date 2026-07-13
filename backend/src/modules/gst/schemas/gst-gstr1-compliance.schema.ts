@@ -31,6 +31,12 @@ export class Gstr1ComplianceRecord {
   @Prop({ index: true })
   financialYear: string;
 
+  @Prop({ index: true })
+  year: number;
+
+  @Prop({ index: true })
+  month: number;
+
   @Prop()
   sourceTable: string;
 
@@ -63,8 +69,13 @@ export const Gstr1ComplianceSchema =
   SchemaFactory.createForClass(Gstr1ComplianceRecord);
 
 Gstr1ComplianceSchema.index(
-  { loanId: 1, gstin: 1, financialYear: 1 },
+  { loanId: 1, gstin: 1, year: 1, month: 1 },
   { unique: true },
+);
+
+Gstr1ComplianceSchema.index(
+  { loanId: 1, gstin: 1, financialYear: 1 },
+  { unique: false },
 );
 
 Gstr1ComplianceSchema.index({ pan: 1, customerId: 1 });

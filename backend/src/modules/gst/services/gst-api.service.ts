@@ -56,6 +56,12 @@ export class GstApiService {
     return this.authedPost<Record<string, any>>(url, { gstin });
   }
 
+  /** POST /gst/compliance/public/gstrs/track */
+  async trackGstrReturns(gstin: string): Promise<Record<string, any>> {
+    const url = `${this.baseUrl}/gst/compliance/public/gstrs/track`;
+    return this.authedPost<Record<string, any>>(url, { gstin });
+  }
+
   /**
    * POST with the access token. Handles:
    *  - 401/403: re-authenticate once and retry.

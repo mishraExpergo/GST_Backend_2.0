@@ -489,7 +489,7 @@ export class GstComplianceService {
 
     if (returnType === 'GSTR-1' && this.gstr1ComplianceModel) {
       await this.gstr1ComplianceModel.updateOne(
-        { loanId: row.loan_id, gstin, financialYear: String(year) },
+        { loanId: row.loan_id, gstin, year, month },
         {
           $set: {
             loanId: row.loan_id,
@@ -498,6 +498,8 @@ export class GstComplianceService {
             gstin,
             gstNo: gstin,
             pan,
+            year,
+            month,
             financialYear: String(year),
             sourceTable: tableName,
             legalName,
@@ -633,19 +635,8 @@ export class GstComplianceService {
 
       if (operation === VERIFY_FETCH_OPERATION) {
         await this.gstAggregationService.triggerAfterVerifyFetchJob(jobId);
-        return;
       }
-      if (operation === VERIFY_GSTR_OPERATION) {
-        await this.gstAggregationService.triggerAfterGstrJob(jobId);
-        return;
-      }
-      if (operation === VERIFY_2B_OPERATION) {
-        await this.gstAggregationService.triggerAfterGstr2bJob(jobId);
-        return;
-      }
-      if (operation === VERIFY_3B_OPERATION) {
-        await this.gstAggregationService.triggerAfterGstr3bJob(jobId);
-      }
+      // GSTR-1 / 2B / 3B aggregation is handled by the return aggregation scheduler.
     } catch (err) {
       this.logger.error(
         `Aggregation trigger failed for job ${jobId}: ${(err as Error).message}`,
