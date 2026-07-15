@@ -18,11 +18,8 @@ import { GstApiService } from './gst-api.service';
 import { GstAggregationService } from './gst-aggregation.service';
 import { GstComplianceRecord } from '../schemas/gst-compliance.schema';
 import { GstTaxpayerReturnsService } from './gst-taxpayer-returns.service';
-import { Gstr1ComplianceRecord } from '../schemas/gst-gstr1-compliance.schema';
 import { Gstr2bComplianceRecord } from '../schemas/gst-gstr2b-compliance.schema';
 import { Gstr3bComplianceRecord } from '../schemas/gst-gstr3b-compliance.schema';
-import { Gstr1aComplianceRecord } from '../schemas/gst-gstr1a-compliance.schema';
-import { buildGstr1ReturnsFromResponse } from './gst-gstr1-aggregation.util';
 
 type GstEntityType = 'PRIMARY' | 'CONSIDERED_ENTITY';
 
@@ -50,8 +47,10 @@ const DEFAULT_SOURCE_TABLE = 'gst_uploaded_file_data';
 const GSTIN_PATTERN =
   /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
 const VERIFY_FETCH_OPERATION = 'GSTIN_VERIFY_AND_FETCH';
+/* DISABLED: GSTR-1 / GSTR-1A
 const VERIFY_GSTR_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR';
 const VERIFY_1A_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_1A';
+*/
 const VERIFY_2B_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_2B';
 const VERIFY_3B_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_3B';
 
@@ -70,17 +69,11 @@ export class GstComplianceService {
     @InjectModel(GstComplianceRecord.name)
     private readonly complianceModel?: Model<GstComplianceRecord>,
     @Optional()
-    @InjectModel(Gstr1ComplianceRecord.name)
-    private readonly gstr1ComplianceModel?: Model<Gstr1ComplianceRecord>,
-    @Optional()
     @InjectModel(Gstr2bComplianceRecord.name)
     private readonly gstr2bComplianceModel?: Model<Gstr2bComplianceRecord>,
     @Optional()
     @InjectModel(Gstr3bComplianceRecord.name)
     private readonly gstr3bComplianceModel?: Model<Gstr3bComplianceRecord>,
-    @Optional()
-    @InjectModel(Gstr1aComplianceRecord.name)
-    private readonly gstr1aComplianceModel?: Model<Gstr1aComplianceRecord>,
     @Optional()
     @Inject('VERIFY_PARENT_SERVICE')
     private readonly verifyParentClient?: ClientProxy,
@@ -124,11 +117,12 @@ export class GstComplianceService {
   }
 
   async startGstr1VerifyAndFetch(
-    year: number,
-    month: number,
-    rawTableName?: string,
-    username?: string,
+    _year: number,
+    _month: number,
+    _rawTableName?: string,
+    _username?: string,
   ): Promise<Job> {
+    /* DISABLED: GSTR-1
     return this.startReturnVerifyAndFetch(
       'GSTR-1',
       VERIFY_GSTR_OPERATION,
@@ -137,14 +131,19 @@ export class GstComplianceService {
       rawTableName,
       username,
     );
+    */
+    throw new ServiceUnavailableException(
+      'GSTR-1 / GSTR-1A temporarily disabled.',
+    );
   }
 
   async startGstr1aVerifyAndFetch(
-    year: number,
-    month: number,
-    rawTableName?: string,
-    username?: string,
+    _year: number,
+    _month: number,
+    _rawTableName?: string,
+    _username?: string,
   ): Promise<Job> {
+    /* DISABLED: GSTR-1A
     return this.startReturnVerifyAndFetch(
       'GSTR-1A',
       VERIFY_1A_OPERATION,
@@ -152,6 +151,10 @@ export class GstComplianceService {
       month,
       rawTableName,
       username,
+    );
+    */
+    throw new ServiceUnavailableException(
+      'GSTR-1 / GSTR-1A temporarily disabled.',
     );
   }
 
@@ -184,6 +187,20 @@ export class GstComplianceService {
       month,
       rawTableName,
       username,
+    );
+  }
+
+  /**
+   * Track filing status job entrypoint (public Sandbox track API).
+   * Full Mongo track pipeline is enabled when gst_return_filing_track support
+   * is present; until then this returns a clear unavailable error.
+   */
+  async startGstrTrackVerifyAndFetch(
+    _financialYear: string,
+    _rawTableName?: string,
+  ): Promise<Job> {
+    throw new ServiceUnavailableException(
+      'GSTR track verify-and-fetch is not configured in this deployment build. Use verify-and-fetch / GSTR-1/2B/3B endpoints.',
     );
   }
 
@@ -416,20 +433,20 @@ export class GstComplianceService {
         skipAutoAggregationTrigger: true,
       };
 
-      if (returnType === 'GSTR-1') {
-        response = await this.gstTaxpayerReturnsService.fetchGstr1(
-          { username, gstin },
-          year,
-          month,
-          tracking,
+      if (returnType === 'GSTR-1' || returnType === 'GSTR-1A') {
+        /* DISABLED: GSTR-1 / GSTR-1A fetch branches
+        if (returnType === 'GSTR-1') {
+          response = await this.gstTaxpayerReturnsService.fetchGstr1(...);
+        } else if (returnType === 'GSTR-1A') {
+          response = await this.gstTaxpayerReturnsService.fetchGstr1a(...);
+        }
+        */
+        result.failed++;
+        this.logger.warn(
+          `Skipping disabled ${returnType} for loanId=${row.loan_id} gstin=${gstin}`,
         );
-      } else if (returnType === 'GSTR-1A') {
-        response = await this.gstTaxpayerReturnsService.fetchGstr1a(
-          { username, gstin },
-          year,
-          month,
-          tracking,
-        );
+        await this.markRowStatus(tableName, row.loan_id, 'FAILED');
+        return;
       } else if (returnType === 'GSTR-2B') {
         response = await this.gstTaxpayerReturnsService.fetchGstr2b(
           { username, gstin },
@@ -487,35 +504,11 @@ export class GstComplianceService {
         'FETCHED',
     );
 
-    if (returnType === 'GSTR-1' && this.gstr1ComplianceModel) {
-      await this.gstr1ComplianceModel.updateOne(
-        { loanId: row.loan_id, gstin, financialYear: String(year) },
-        {
-          $set: {
-            loanId: row.loan_id,
-            customerId,
-            entityType: row.entity_type,
-            gstin,
-            gstNo: gstin,
-            pan,
-            financialYear: String(year),
-            sourceTable: tableName,
-            legalName,
-            status,
-            returnType: 'GSTR-1',
-            returns: buildGstr1ReturnsFromResponse(payload),
-            gstrResponse: payload,
-            systemMetadata: {
-              fetchedAt: new Date().toISOString(),
-              month,
-              username,
-            },
-          },
-        },
-        { upsert: true },
-      );
+    /* DISABLED: GSTR-1 Mongo persist
+    if (returnType === 'GSTR-1') {
       return;
     }
+    */
 
     if (returnType === 'GSTR-2B' && this.gstr2bComplianceModel) {
       await this.gstr2bComplianceModel.updateOne(
@@ -573,30 +566,11 @@ export class GstComplianceService {
       return;
     }
 
-    if (returnType === 'GSTR-1A' && this.gstr1aComplianceModel) {
-      await this.gstr1aComplianceModel.updateOne(
-        { loanId: row.loan_id, gstin, year, month },
-        {
-          $set: {
-            loanId: row.loan_id,
-            customerId,
-            gstin,
-            gstNo: gstin,
-            pan,
-            year,
-            month,
-            sourceTable: tableName,
-            status,
-            gstr1aResponse: payload,
-            systemMetadata: {
-              fetchedAt: new Date().toISOString(),
-              username,
-            },
-          },
-        },
-        { upsert: true },
-      );
+    /* DISABLED: GSTR-1A Mongo persist
+    if (returnType === 'GSTR-1A') {
+      // nothing persisted
     }
+    */
   }
 
   private async finalizeJob(jobId: string): Promise<void> {
@@ -635,10 +609,12 @@ export class GstComplianceService {
         await this.gstAggregationService.triggerAfterVerifyFetchJob(jobId);
         return;
       }
+      /* DISABLED: GSTR-1 aggregation trigger
       if (operation === VERIFY_GSTR_OPERATION) {
         await this.gstAggregationService.triggerAfterGstrJob(jobId);
         return;
       }
+      */
       if (operation === VERIFY_2B_OPERATION) {
         await this.gstAggregationService.triggerAfterGstr2bJob(jobId);
         return;

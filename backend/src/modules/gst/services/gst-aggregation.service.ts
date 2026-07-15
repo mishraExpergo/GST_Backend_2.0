@@ -16,21 +16,16 @@ import { PrimaryGstAggregation } from '../../../entities/primary-gst-aggregation
 
 import { SecondaryGstAggregation } from '../../../entities/secondary-gst-aggregation.entity';
 
-import { Gstr1ComplianceRecord } from '../schemas/gst-gstr1-compliance.schema';
 import { Gstr2bComplianceRecord } from '../schemas/gst-gstr2b-compliance.schema';
 import { Gstr3bComplianceRecord } from '../schemas/gst-gstr3b-compliance.schema';
 
 import {
-
-  computePrimaryGstr1AggregationMetrics,
 
   mergeAggregationVariable,
 
   preserveMetricKeys,
 
   PRIMARY_GSTR1_METRIC_KEYS,
-
-  PRIMARY_GST_COMPLIANCE_METRIC_KEYS,
 
 } from './gst-gstr1-aggregation.util';
 import {
@@ -186,7 +181,6 @@ export interface CustomerComplianceContext {
 
 const VERIFY_FETCH_OPERATION = 'GSTIN_VERIFY_AND_FETCH';
 
-const VERIFY_GSTR_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR';
 const VERIFY_2B_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_2B';
 const VERIFY_3B_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_3B';
 const OBSOLETE_GSTR3B_KEYS = ['PRIMARY_TOTAL_TURNOVER', 'CONSIDERED_TOTAL_TURNOVER'] as const;
@@ -217,12 +211,6 @@ export class GstAggregationService {
     @InjectModel(GstComplianceRecord.name)
 
     private readonly complianceModel?: Model<GstComplianceRecord>,
-
-    @Optional()
-
-    @InjectModel(Gstr1ComplianceRecord.name)
-
-    private readonly gstr1ComplianceModel?: Model<Gstr1ComplianceRecord>,
 
     @Optional()
 
@@ -342,246 +330,45 @@ export class GstAggregationService {
 
    */
 
+  /**
+   * DISABLED: GSTR-1 aggregation — Mongo collection / flow temporarily disabled.
+   */
   async triggerAfterGstrJob(jobId: string): Promise<void> {
-
-    if (!this.gstr1ComplianceModel) {
-
-      this.logger.warn('MongoDB GSTR-1 model not enabled; skipping GSTR-1 aggregation.');
-
-      return;
-
-    }
-
-
-
-    const job = await this.gstService.getJobStatus(jobId);
-
-    if (!job || job.metadata?.operation !== VERIFY_GSTR_OPERATION) {
-
-      return;
-
-    }
-
-
-
-    const sourceTable = String(job.metadata?.sourceTable ?? '').trim();
-
-    if (!sourceTable) {
-
-      this.logger.warn(
-
-        `Job ${jobId} has no sourceTable in metadata; skipping GSTR-1 aggregation.`,
-
-      );
-
-      return;
-
-    }
-
-
-
-    const customerIds = this.collectCustomerIdsFromJob(job);
-
-    if (customerIds.length === 0) {
-
-      this.logger.log(
-
-        `Job ${jobId}: no customerIds found in task payloads; skipping GSTR-1 aggregation.`,
-
-      );
-
-      return;
-
-    }
-
-
-
-    this.logger.log(
-
-      `Job ${jobId} completed — running GSTR-1 aggregation for ${customerIds.length} customer(s).`,
-
+    /* DISABLED: GSTR-1
+    previous implementation ran GSTR-1 aggregation from Mongo.
+    */
+    this.logger.warn(
+      `GSTR-1 / GSTR-1A temporarily disabled; skipping GSTR-1 aggregation for job ${jobId}.`,
     );
-
-
-
-    for (const customerId of customerIds) {
-
-      try {
-
-        await this.runGstr1AggregationForCustomer(customerId, sourceTable);
-
-      } catch (err) {
-
-        this.logger.error(
-
-          `GSTR-1 aggregation failed for customerId=${customerId}: ${(err as Error).message}`,
-
-        );
-
-      }
-
-    }
-
   }
 
-
-
   /**
-
-   * Runs GSTR-1 aggregation for every customer present in the upload table.
-
-   * Useful when GSTR-1 Mongo data was seeded manually.
-
+   * DISABLED: GSTR-1 aggregation.
    */
-
   async runGstr1AggregationForTable(
-
     rawTableName?: string,
-
   ): Promise<{ customersProcessed: number }> {
-
-    if (!this.gstr1ComplianceModel) {
-
-      this.logger.warn('MongoDB GSTR-1 model not enabled; skipping GSTR-1 aggregation.');
-
-      return { customersProcessed: 0 };
-
-    }
-
-
-
-    const sourceTable = this.sanitizeTableName(rawTableName);
-
-    const customerIds = await this.getDistinctCustomerIdsFromTable(sourceTable);
-
-
-
-    for (const customerId of customerIds) {
-
-      await this.runGstr1AggregationForCustomer(customerId, sourceTable);
-
-    }
-
-
-
-    return { customersProcessed: customerIds.length };
-
+    void rawTableName;
+    /* DISABLED: GSTR-1 table aggregation */
+    this.logger.warn(
+      'GSTR-1 / GSTR-1A temporarily disabled; skipping GSTR-1 table aggregation.',
+    );
+    return { customersProcessed: 0 };
   }
 
-
-
   /**
-
-   * Computes GSTR-1 metrics for a customer and merges them into
-
-   * primary_gst_aggregation.aggregation_variable.
-
+   * DISABLED: GSTR-1 aggregation.
    */
-
   async runGstr1AggregationForCustomer(
-
     customerId: string,
-
     sourceTable: string,
-
   ): Promise<void> {
-
-    const uploadRows = await this.getUploadRowsForCustomer(customerId, sourceTable);
-
-    if (uploadRows.length === 0) {
-
-      return;
-
-    }
-
-
-
-    const existingRows = await this.primaryAggRepo.find({
-
-      where: { customerId },
-
-    });
-
-    const existingByLoan = new Map(
-
-      existingRows.map((row) => [row.associatedLoanId, row.aggregationVariable]),
-
+    void customerId;
+    void sourceTable;
+    /* DISABLED: GSTR-1 customer aggregation */
+    this.logger.warn(
+      'GSTR-1 / GSTR-1A temporarily disabled; skipping GSTR-1 customer aggregation.',
     );
-
-
-
-    const rows: Partial<PrimaryGstAggregation>[] = [];
-
-
-
-    for (const uploadRow of uploadRows) {
-
-      const primaryPan = this.normalizePan(uploadRow.primary_pan);
-
-      if (!primaryPan) {
-
-        continue;
-
-      }
-
-
-
-      const panRecords = await this.gstr1ComplianceModel!.find({
-
-        pan: primaryPan,
-
-        customerId,
-
-      })
-
-        .lean()
-
-        .exec();
-
-
-
-      const metrics = computePrimaryGstr1AggregationMetrics(panRecords);
-
-      const existingJson = existingByLoan.get(uploadRow.associated_loan_id) ?? null;
-
-
-
-      const aggregationObject = this.buildAggregationObject(
-        existingJson,
-        PRIMARY_GST_COMPLIANCE_METRIC_KEYS,
-        metrics,
-      );
-
-      rows.push({
-        customerId,
-        associatedLoanId: uploadRow.associated_loan_id,
-        aggregationVariable: aggregationObject,
-      });
-
-    }
-
-
-
-    if (rows.length === 0) {
-
-      return;
-
-    }
-
-
-
-    await this.primaryAggRepo.delete({ customerId });
-
-    await this.primaryAggRepo.save(rows);
-
-
-
-    this.logger.log(
-
-      `customerId=${customerId}: wrote ${rows.length} primary_gst_aggregation row(s) with GSTR-1 metrics.`,
-
-    );
-
   }
 
   /**
@@ -670,16 +457,22 @@ export class GstAggregationService {
     }
 
     const existingPrimaryRows = await this.primaryAggRepo.find({ where: { customerId } });
-    const existingPrimaryByLoan = new Map(
-      existingPrimaryRows.map((row) => [row.associatedLoanId, row]),
-    );
+    const existingPrimaryByLoan = new Map<string, PrimaryGstAggregation>();
+    for (const row of existingPrimaryRows) {
+      if (row.associatedLoanId) {
+        existingPrimaryByLoan.set(row.associatedLoanId, row);
+      }
+    }
 
     const existingSecondaryRows = await this.secondaryAggRepo.find({
       where: { customerId },
     });
-    const existingSecondaryByLoan = new Map(
-      existingSecondaryRows.map((row) => [row.associatedLoanId, row]),
-    );
+    const existingSecondaryByLoan = new Map<string, SecondaryGstAggregation>();
+    for (const row of existingSecondaryRows) {
+      if (row.associatedLoanId) {
+        existingSecondaryByLoan.set(row.associatedLoanId, row);
+      }
+    }
 
     const gstr2bRecords = await this.gstr2bComplianceModel
       .find({ customerId })
@@ -843,16 +636,22 @@ export class GstAggregationService {
     }
 
     const existingPrimaryRows = await this.primaryAggRepo.find({ where: { customerId } });
-    const existingPrimaryByLoan = new Map(
-      existingPrimaryRows.map((row) => [row.associatedLoanId, row]),
-    );
+    const existingPrimaryByLoan = new Map<string, PrimaryGstAggregation>();
+    for (const row of existingPrimaryRows) {
+      if (row.associatedLoanId) {
+        existingPrimaryByLoan.set(row.associatedLoanId, row);
+      }
+    }
 
     const existingSecondaryRows = await this.secondaryAggRepo.find({
       where: { customerId },
     });
-    const existingSecondaryByLoan = new Map(
-      existingSecondaryRows.map((row) => [row.associatedLoanId, row]),
-    );
+    const existingSecondaryByLoan = new Map<string, SecondaryGstAggregation>();
+    for (const row of existingSecondaryRows) {
+      if (row.associatedLoanId) {
+        existingSecondaryByLoan.set(row.associatedLoanId, row);
+      }
+    }
 
     const gstr3bRecords = await this.gstr3bComplianceModel
       .find({ customerId })
@@ -1078,11 +877,12 @@ export class GstAggregationService {
 
     });
 
-    const existingByLoan = new Map(
-
-      existingRows.map((row) => [row.associatedLoanId, row.aggregationVariable]),
-
-    );
+    const existingByLoan = new Map<string, string | null>();
+    for (const row of existingRows) {
+      if (row.associatedLoanId) {
+        existingByLoan.set(row.associatedLoanId, row.aggregationVariable ?? null);
+      }
+    }
 
 
 
@@ -1616,6 +1416,8 @@ export class GstAggregationService {
 
     }
 
+
+    
 
 
     return null;

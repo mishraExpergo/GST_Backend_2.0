@@ -10,6 +10,7 @@ import {
   Param,
   Post,
   Query,
+  ServiceUnavailableException,
   UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
@@ -98,7 +99,7 @@ export class GstController {
       tempPath,
     });
 
-    if (this.excelClient) {
+    if (this.excelClient && process.env.ENABLE_RABBITMQ === 'true') {
       this.excelClient.emit('excel_import', {
         jobId: job.id,
         filePath: tempPath,
@@ -127,6 +128,7 @@ export class GstController {
    * body (optional):
    *   - tableName: source Postgres table (defaults to "gst_uploaded_file_data")
    */
+
   @Post('verify-and-fetch')
   @HttpCode(HttpStatus.ACCEPTED)
   async verifyAndFetch(@Body('tableName') tableName?: string) {
@@ -143,20 +145,17 @@ export class GstController {
 
   /**
    * POST /gst/verify-and-fetch/gstr-1
-   * body:
-   *   - year (required)
-   *   - month (required)
-   *   - tableName (optional)
-   *   - username (optional; defaults to GSTIN per row)
+   * DISABLED: GSTR-1 / GSTR-1A temporarily disabled.
    */
   @Post('verify-and-fetch/gstr-1')
-  @HttpCode(HttpStatus.ACCEPTED)
+  @HttpCode(HttpStatus.SERVICE_UNAVAILABLE)
   async verifyAndFetchGstr1(
-    @Body('year') year: number,
-    @Body('month') month: number,
-    @Body('tableName') tableName?: string,
-    @Body('username') username?: string,
+    @Body('year') _year?: number,
+    @Body('month') _month?: number,
+    @Body('tableName') _tableName?: string,
+    @Body('username') _username?: string,
   ) {
+    /* DISABLED: GSTR-1
     const job = await this.gstComplianceService.startGstr1VerifyAndFetch(
       Number(year),
       Number(month),
@@ -169,19 +168,25 @@ export class GstController {
       status: job.status,
       checkStatusUrl: `/gst/status/${job.id}`,
     };
+    */
+    throw new ServiceUnavailableException(
+      'GSTR-1 / GSTR-1A temporarily disabled.',
+    );
   }
 
   /**
    * POST /gst/verify-and-fetch/gstr-1a
+   * DISABLED: GSTR-1 / GSTR-1A temporarily disabled.
    */
   @Post('verify-and-fetch/gstr-1a')
-  @HttpCode(HttpStatus.ACCEPTED)
+  @HttpCode(HttpStatus.SERVICE_UNAVAILABLE)
   async verifyAndFetchGstr1a(
-    @Body('year') year: number,
-    @Body('month') month: number,
-    @Body('tableName') tableName?: string,
-    @Body('username') username?: string,
+    @Body('year') _year?: number,
+    @Body('month') _month?: number,
+    @Body('tableName') _tableName?: string,
+    @Body('username') _username?: string,
   ) {
+    /* DISABLED: GSTR-1A
     const job = await this.gstComplianceService.startGstr1aVerifyAndFetch(
       Number(year),
       Number(month),
@@ -194,6 +199,10 @@ export class GstController {
       status: job.status,
       checkStatusUrl: `/gst/status/${job.id}`,
     };
+    */
+    throw new ServiceUnavailableException(
+      'GSTR-1 / GSTR-1A temporarily disabled.',
+    );
   }
 
   /**
@@ -247,12 +256,50 @@ export class GstController {
   }
 
   /**
+   * POST /gst/verify-and-fetch/gstr-track
+   * Track filing status only — does NOT re-verify GSTINs.
+   * Reads GSTINs from the upload table and calls Sandbox public track.
+   * Skips Sandbox when gst_return_filing_track already has that GSTIN + FY
+   * (FETCHED / NO_RECORD / INVALID_FY).
+   * body:
+   *   - financialYear (required): Sandbox format e.g. "FY 2021-22"
+   *   - tableName (optional)
+   */
+  @Post('verify-and-fetch/gstr-track')
+  @HttpCode(HttpStatus.ACCEPTED)
+  async verifyAndFetchGstrTrack(
+    @Body('financialYear') financialYear: string,
+    @Body('tableName') tableName?: string,
+  ) {
+    if (!String(financialYear ?? '').trim()) {
+      throw new BadRequestException(
+        '"financialYear" is required (Sandbox format e.g. "FY 2021-22").',
+      );
+    }
+
+    const job = await this.gstComplianceService.startGstrTrackVerifyAndFetch(
+      financialYear,
+      tableName,
+    );
+    return {
+      message:
+        'GSTR track verify & fetch job accepted for background processing.',
+      jobId: job.id,
+      status: job.status,
+      financialYear: job.metadata?.financialYear ?? financialYear,
+      checkStatusUrl: `/gst/status/${job.id}`,
+    };
+  }
+
+  /**
    * POST /gst/taxpayer/otp/generate
    * Triggers OTP generation on Sandbox for a taxpayer session.
+   * Body: gstin (required). username is optional — if omitted, loaded from
+   * gst_uploaded_file_data.username for that GSTIN.
    */
   @Post('taxpayer/otp/generate')
   async generateTaxpayerOtp(
-    @Body('username') username: string,
+    @Body('username') username: string | undefined,
     @Body('gstin') gstin: string,
   ) {
     const data = await this.gstTaxpayerAuthService.generateOtp({ username, gstin });
@@ -262,10 +309,11 @@ export class GstController {
   /**
    * POST /gst/taxpayer/otp/submit
    * Stores OTP in backend for up to 10 minutes before verify call.
+   * Body: gstin + otp (required). username optional (auto from upload table).
    */
   @Post('taxpayer/otp/submit')
   async submitTaxpayerOtp(
-    @Body('username') username: string,
+    @Body('username') username: string | undefined,
     @Body('gstin') gstin: string,
     @Body('otp') otp: string,
   ) {
@@ -280,10 +328,11 @@ export class GstController {
   /**
    * POST /gst/taxpayer/otp/verify
    * Verifies submitted OTP and saves taxpayer access token.
+   * Body: gstin + otp (required). username optional (auto from upload table).
    */
   @Post('taxpayer/otp/verify')
   async verifyTaxpayerOtp(
-    @Body('username') username: string,
+    @Body('username') username: string | undefined,
     @Body('gstin') gstin: string,
     @Body('otp') otp: string,
   ) {
@@ -294,7 +343,7 @@ export class GstController {
     return this.successResponse('taxpayer-auth.verify-otp', data);
   }
 
-  /**
+  /*
    * POST /gst/taxpayer/session/refresh
    * Refreshes taxpayer access token (manual endpoint).
    */
@@ -327,18 +376,20 @@ export class GstController {
   }
 
   /**
-   * GET /gst/taxpayer/gstr-1/:year/:month?username=...&gstin=...
+   * GET /gst/taxpayer/gstr-1/:year/:month
+   * DISABLED: GSTR-1 / GSTR-1A temporarily disabled.
    */
   @Get('taxpayer/gstr-1/:year/:month')
   async fetchTaxpayerGstr1(
-    @Param('year') year: string,
-    @Param('month') month: string,
-    @Query('username') username: string,
-    @Query('gstin') gstin: string,
-    @Query('associatedLoanId') associatedLoanId?: string,
-    @Query('customerId') customerId?: string,
-    @Query('dataSource') dataSource?: string,
+    @Param('year') _year: string,
+    @Param('month') _month: string,
+    @Query('username') _username?: string,
+    @Query('gstin') _gstin?: string,
+    @Query('associatedLoanId') _associatedLoanId?: string,
+    @Query('customerId') _customerId?: string,
+    @Query('dataSource') _dataSource?: string,
   ) {
+    /* DISABLED: GSTR-1
     const data = await this.gstTaxpayerReturnsService.fetchGstr1(
       { username, gstin },
       Number(year),
@@ -346,6 +397,10 @@ export class GstController {
       { associatedLoanId, customerId, dataSource },
     );
     return this.successResponse('taxpayer-returns.gstr-1', data);
+    */
+    throw new ServiceUnavailableException(
+      'GSTR-1 / GSTR-1A temporarily disabled.',
+    );
   }
 
   /**
@@ -393,18 +448,20 @@ export class GstController {
   }
 
   /**
-   * GET /gst/taxpayer/gstr-1a/:year/:month?username=...&gstin=...
+   * GET /gst/taxpayer/gstr-1a/:year/:month
+   * DISABLED: GSTR-1 / GSTR-1A temporarily disabled.
    */
   @Get('taxpayer/gstr-1a/:year/:month')
   async fetchTaxpayerGstr1a(
-    @Param('year') year: string,
-    @Param('month') month: string,
-    @Query('username') username: string,
-    @Query('gstin') gstin: string,
-    @Query('associatedLoanId') associatedLoanId?: string,
-    @Query('customerId') customerId?: string,
-    @Query('dataSource') dataSource?: string,
+    @Param('year') _year: string,
+    @Param('month') _month: string,
+    @Query('username') _username?: string,
+    @Query('gstin') _gstin?: string,
+    @Query('associatedLoanId') _associatedLoanId?: string,
+    @Query('customerId') _customerId?: string,
+    @Query('dataSource') _dataSource?: string,
   ) {
+    /* DISABLED: GSTR-1A
     const data = await this.gstTaxpayerReturnsService.fetchGstr1a(
       { username, gstin },
       Number(year),
@@ -412,6 +469,10 @@ export class GstController {
       { associatedLoanId, customerId, dataSource },
     );
     return this.successResponse('taxpayer-returns.gstr-1a', data);
+    */
+    throw new ServiceUnavailableException(
+      'GSTR-1 / GSTR-1A temporarily disabled.',
+    );
   }
 
   /**
@@ -463,7 +524,8 @@ export class GstController {
    */
   @Get('api-logs')
   async getApiLogs(
-    @Query('gstrType') gstrType?: 'GSTR-1' | 'GSTR-1A' | 'GSTR-2B' | 'GSTR-3B',
+    @Query('gstrType')
+    gstrType?: 'GST-RETURN' | 'GST-NOTICES' | 'GSTR' | 'GSTR-2B' | 'GSTR-3B',
     @Query('status') status?: string,
     @Query('customerId') customerId?: string,
     @Query('associatedLoanId') associatedLoanId?: string,
@@ -475,12 +537,18 @@ export class GstController {
     @Query('limit') limitRaw?: string,
     @Query('offset') offsetRaw?: string,
   ) {
-    const allowedGstrTypes = new Set(['GSTR-1', 'GSTR-1A', 'GSTR-2B', 'GSTR-3B']);
+    const allowedGstrTypes = new Set([
+      'GST-RETURN',
+      'GST-NOTICES',
+      'GSTR',
+      'GSTR-2B',
+      'GSTR-3B',
+    ]);
     const allowedStatuses = new Set(['PROCESSING', 'SUCCESS', 'FAILED']);
 
     if (gstrType && !allowedGstrTypes.has(gstrType)) {
       throw new BadRequestException(
-        'Invalid gstrType. Allowed values: GSTR-1, GSTR-1A, GSTR-2B, GSTR-3B.',
+        'Invalid gstrType. Allowed values: GST-RETURN, GST-NOTICES, GSTR, GSTR-2B, GSTR-3B.',
       );
     }
     if (status && !allowedStatuses.has(status)) {
@@ -559,6 +627,9 @@ export class GstController {
       throw new BadRequestException(`${fieldName} must be a valid ISO date string.`);
     }
     return parsed;
+
+
+
   }
 
   private parseIntWithBounds(
@@ -581,3 +652,4 @@ export class GstController {
     return parsed;
   }
 }
+

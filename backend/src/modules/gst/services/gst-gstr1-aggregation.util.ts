@@ -1,5 +1,3 @@
-import { Gstr1ComplianceRecord } from '../schemas/gst-gstr1-compliance.schema';
-
 export interface PrimaryGstr1AggregationMetrics {
   PRIMARY_TOTAL_RETURN_PERIODS: number;
   PRIMARY_FILED_RETURN_COUNT: number;
@@ -85,9 +83,9 @@ export function resolveIdentityPan(
 }
 
 export function getGstr1RecordsForPan(
-  records: Array<Gstr1ComplianceRecord | Record<string, any>>,
+  records: Array<Record<string, any>>,
   pan: string,
-): Array<Gstr1ComplianceRecord | Record<string, any>> {
+): Array<Record<string, any>> {
   return records.filter((record) => getGstr1RecordPan(record) === pan);
 }
 
@@ -146,7 +144,7 @@ export function buildGstr1ReturnsFromResponse(
 
 export function getGstr1RecordPan(
 
-  record: Gstr1ComplianceRecord | Record<string, any>,
+  record: Record<string, any>,
 
 ): string | null {
 
@@ -164,7 +162,7 @@ export function getGstr1RecordPan(
 }
 
 export function extractGstr1ReturnPeriodRows(
-  record: Gstr1ComplianceRecord | Record<string, any>,
+  record: Record<string, any>,
 ): Gstr1ReturnPeriodRow[] {
   const rows: Gstr1ReturnPeriodRow[] = [];
 
@@ -228,7 +226,7 @@ export function extractGstr1ReturnPeriodRows(
 }
 
 export function computePrimaryGstr1AggregationMetrics(
-  records: Array<Gstr1ComplianceRecord | Record<string, any>>,
+  records: Array<Record<string, any>>,
 ): PrimaryGstr1AggregationMetrics {
   const allReturnPeriods = new Set<string>();
   const filedReturnPeriods = new Set<string>();
@@ -306,7 +304,7 @@ export function preserveMetricKeys(
 }
 
 function extractEFiledList(
-  record: Gstr1ComplianceRecord | Record<string, any>,
+  record: Record<string, any>,
 ): Array<Record<string, any>> {
   const raw = record as Record<string, any>;
   return extractEFiledListFromResponse(
@@ -321,6 +319,7 @@ function extractEFiledListFromResponse(
     response?.data?.data?.EFiledlist,
     response?.data?.EFiledlist,
     response?.EFiledlist,
+    
   ];
 
   for (const candidate of candidates) {
@@ -447,6 +446,8 @@ function getGstr1DueDate(returnPeriod: string): Date | null {
 
 function parseDate(raw: string): Date | null {
   if (!raw) {
+
+
     return null;
   }
 

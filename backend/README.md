@@ -23,7 +23,11 @@
 
 ## Description
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+NestJS GST Backend 2.0 — verify/fetch, taxpayer returns, and aggregation.
+
+## Deploy
+
+See [DEPLOY.md](./DEPLOY.md) for infra, env, schema bootstrap, and smoke checks.
 
 ## Project setup
 

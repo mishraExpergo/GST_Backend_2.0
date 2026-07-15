@@ -1,9 +1,9 @@
-import {
+ import {
   BadGatewayException,
   BadRequestException,
   Injectable,
   Logger,
-  Optional,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -12,9 +12,7 @@ import { GstTaxpayerAuthService } from './gst-taxpayer-auth.service';
 import { ApiRequestLogService } from './api-request-log.service';
 import { GstService } from '../gst.service';
 import { GstAggregationService } from './gst-aggregation.service';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
-import { Gstr1aComplianceRecord } from '../schemas/gst-gstr1a-compliance.schema';
+import { resolveGstApiCredentials } from './gst-api-credentials.util';
 
 interface TaxpayerIdentity {
   username: string;
@@ -29,7 +27,9 @@ interface RequestTrackingContext {
   skipAutoAggregationTrigger?: boolean;
 }
 
+/* DISABLED: GSTR-1
 const VERIFY_GSTR_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR';
+*/
 const VERIFY_2B_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_2B';
 const VERIFY_3B_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_3B';
 
@@ -44,17 +44,15 @@ export class GstTaxpayerReturnsService {
     private readonly apiRequestLogService: ApiRequestLogService,
     private readonly gstService: GstService,
     private readonly gstAggregationService: GstAggregationService,
-    @Optional()
-    @InjectModel(Gstr1aComplianceRecord.name)
-    private readonly gstr1aComplianceModel?: Model<Gstr1aComplianceRecord>,
   ) {}
 
   async fetchGstr1(
-    identity: TaxpayerIdentity,
-    year: number,
-    month: number,
-    tracking: RequestTrackingContext = {},
+    _identity: TaxpayerIdentity,
+    _year: number,
+    _month: number,
+    _tracking: RequestTrackingContext = {},
   ): Promise<Record<string, any>> {
+    /* DISABLED: GSTR-1
     const { normalizedIdentity, yearNum, monthNum } = this.validateInputs(
       identity,
       year,
@@ -67,6 +65,10 @@ export class GstTaxpayerReturnsService {
       yearNum,
       monthNum,
       tracking,
+    );
+    */
+    throw new ServiceUnavailableException(
+      'GSTR-1 / GSTR-1A temporarily disabled.',
     );
   }
 
@@ -113,11 +115,12 @@ export class GstTaxpayerReturnsService {
   }
 
   async fetchGstr1a(
-    identity: TaxpayerIdentity,
-    year: number,
-    month: number,
-    tracking: RequestTrackingContext = {},
+    _identity: TaxpayerIdentity,
+    _year: number,
+    _month: number,
+    _tracking: RequestTrackingContext = {},
   ): Promise<Record<string, any>> {
+    /* DISABLED: GSTR-1A
     const { normalizedIdentity, yearNum, monthNum } = this.validateInputs(
       identity,
       year,
@@ -130,6 +133,10 @@ export class GstTaxpayerReturnsService {
       yearNum,
       monthNum,
       tracking,
+    );
+    */
+    throw new ServiceUnavailableException(
+      'GSTR-1 / GSTR-1A temporarily disabled.',
     );
   }
 
@@ -158,7 +165,7 @@ export class GstTaxpayerReturnsService {
       String(tracking.customerId ?? '').trim() || normalizedIdentity.username;
     const log = await this.apiRequestLogService.createProcessingLog({
       gstrFamily: 'GSTR',
-      gstrType: 'GST-RETURN',
+      gstrType: 'GST-NOTICES',
       apiName: path,
       associatedLoanId,
       customerId,
@@ -178,8 +185,8 @@ export class GstTaxpayerReturnsService {
           return await axios.get(url, {
             headers: {
               authorization: accessToken,
-              'x-api-key': this.config.get<string>('GST_API_KEY_LIVE', ''),
-              'x-api-version': this.config.get<string>('GST_API_VERSION', '1.0.0'),
+              'x-api-key': resolveGstApiCredentials(this.config).apiKey,
+              'x-api-version': resolveGstApiCredentials(this.config).apiVersion,
             },
             timeout: this.timeoutMs,
             validateStatus: () => true,
@@ -280,7 +287,7 @@ export class GstTaxpayerReturnsService {
       String(tracking.customerId ?? '').trim() || normalizedIdentity.username;
     const log = await this.apiRequestLogService.createProcessingLog({
       gstrFamily: 'GSTR',
-      gstrType: 'GST-RETURN',
+      gstrType: 'GST-NOTICES',
       apiName: '/gst/compliance/tax-payer/notices/{referenceId}',
       associatedLoanId,
       customerId,
@@ -303,8 +310,8 @@ export class GstTaxpayerReturnsService {
           return await axios.get(url, {
             headers: {
               authorization: accessToken,
-              'x-api-key': this.config.get<string>('GST_API_KEY_LIVE', ''),
-              'x-api-version': this.config.get<string>('GST_API_VERSION', '1.0.0'),
+              'x-api-key': resolveGstApiCredentials(this.config).apiKey,
+              'x-api-version': resolveGstApiCredentials(this.config).apiVersion,
             },
             timeout: this.timeoutMs,
             validateStatus: () => true,
@@ -406,16 +413,20 @@ export class GstTaxpayerReturnsService {
       String(tracking.associatedLoanId ?? '').trim() ||
       `${identity.username}:${identity.gstin}`;
     const customerId = String(tracking.customerId ?? '').trim() || identity.username;
-    const log = await this.apiRequestLogService.createProcessingLog({
-      gstrFamily: 'GSTR',
-      gstrType: returnType,
-      apiName: path,
-      associatedLoanId,
-      customerId,
-      gstNumber: identity.gstin,
-      dataSource: tracking.dataSource ?? 'sandbox',
-      metadata: { username: identity.username, year, month },
-    });
+    // GSTR-1 / GSTR-1A are not tracked in api_request_logs.
+    const log =
+      returnType === 'GSTR-1' || returnType === 'GSTR-1A'
+        ? null
+        : await this.apiRequestLogService.createProcessingLog({
+            gstrFamily: 'GSTR',
+            gstrType: returnType,
+            apiName: path,
+            associatedLoanId,
+            customerId,
+            gstNumber: identity.gstin,
+            dataSource: tracking.dataSource ?? 'sandbox',
+            metadata: { username: identity.username, year, month },
+          });
 
     while (true) {
       const url = `${this.baseUrl}${path}`;
@@ -428,17 +439,19 @@ export class GstTaxpayerReturnsService {
           return await axios.get(url, {
             headers: {
               authorization: accessToken,
-              'x-api-key': this.config.get<string>('GST_API_KEY_LIVE', ''),
-              'x-api-version': this.config.get<string>('GST_API_VERSION', '1.0.0'),
+              'x-api-key': resolveGstApiCredentials(this.config).apiKey,
+              'x-api-version': resolveGstApiCredentials(this.config).apiVersion,
             },
             timeout: this.timeoutMs,
             validateStatus: () => true,
           });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          await this.apiRequestLogService.markFailure(log.id, null, message, {
-            url,
-          });
+          if (log) {
+            await this.apiRequestLogService.markFailure(log.id, null, message, {
+              url,
+            });
+          }
           throw err;
         }
       })();
@@ -448,7 +461,9 @@ export class GstTaxpayerReturnsService {
         !retriedAfter401
       ) {
         retriedAfter401 = true;
-        await this.apiRequestLogService.incrementRetry(log.id);
+        if (log) {
+          await this.apiRequestLogService.incrementRetry(log.id);
+        }
         await this.taxpayerAuthService.refreshAccessToken(identity);
         continue;
       }
@@ -458,18 +473,22 @@ export class GstTaxpayerReturnsService {
         attempt < maxRetries
       ) {
         attempt++;
-        await this.apiRequestLogService.incrementRetry(log.id);
+        if (log) {
+          await this.apiRequestLogService.incrementRetry(log.id);
+        }
         await this.delay(baseDelay * 2 ** (attempt - 1));
         continue;
       }
 
       if (response.status === 401 || response.status === 403) {
-        await this.apiRequestLogService.markFailure(
-          log.id,
-          response.status,
-          `${returnType} unauthorized`,
-          { url },
-        );
+        if (log) {
+          await this.apiRequestLogService.markFailure(
+            log.id,
+            response.status,
+            `${returnType} unauthorized`,
+            { url },
+          );
+        }
         throw new UnauthorizedException(
           `${returnType} fetch unauthorized. Taxpayer session may be expired; regenerate OTP.`,
         );
@@ -477,12 +496,14 @@ export class GstTaxpayerReturnsService {
 
       if (response.status < 200 || response.status >= 300) {
         const payload = JSON.stringify(response.data ?? {}).slice(0, 300);
-        await this.apiRequestLogService.markFailure(
-          log.id,
-          response.status,
-          payload,
-          { url },
-        );
+        if (log) {
+          await this.apiRequestLogService.markFailure(
+            log.id,
+            response.status,
+            payload,
+            { url },
+          );
+        }
         this.logger.error(
           `${returnType} fetch failed for ${identity.gstin} (${year}-${month}) with ${response.status}: ${payload}`,
         );
@@ -491,18 +512,11 @@ export class GstTaxpayerReturnsService {
         );
       }
 
-      await this.apiRequestLogService.markSuccess(log.id, response.status, {
-        url,
-      });
-
-      await this.storeGstr1aResponseIfApplicable(
-        returnType,
-        identity,
-        year,
-        month,
-        tracking,
-        response.data ?? {},
-      );
+      if (log) {
+        await this.apiRequestLogService.markSuccess(log.id, response.status, {
+          url,
+        });
+      }
 
       if (!tracking.skipAutoAggregationTrigger) {
         await this.triggerAggregationForReturnType(
@@ -643,56 +657,6 @@ export class GstTaxpayerReturnsService {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  private async storeGstr1aResponseIfApplicable(
-    returnType: 'GSTR-1' | 'GSTR-1A' | 'GSTR-2B' | 'GSTR-3B',
-    identity: TaxpayerIdentity,
-    year: number,
-    month: number,
-    tracking: RequestTrackingContext,
-    payload: Record<string, any>,
-  ): Promise<void> {
-    if (returnType !== 'GSTR-1A' || !this.gstr1aComplianceModel) {
-      return;
-    }
-
-    const loanId =
-      String(tracking.associatedLoanId ?? '').trim() ||
-      `${identity.username}:${identity.gstin}`;
-    const customerId =
-      String(tracking.customerId ?? '').trim() || identity.username;
-    const sourceTable =
-      String(tracking.sourceTable ?? '').trim() ||
-      this.config.get<string>('GST_AGGREGATION_SOURCE_TABLE', 'gst_uploaded_file_data');
-
-    const gstin = identity.gstin.trim().toUpperCase();
-    const pan = gstin.length >= 12 ? gstin.substring(2, 12) : '';
-    const status = String(payload?.data?.status ?? payload?.status ?? 'FETCHED');
-
-    await this.gstr1aComplianceModel.updateOne(
-      { loanId, gstin, year, month },
-      {
-        $set: {
-          loanId,
-          customerId,
-          gstin,
-          gstNo: gstin,
-          pan,
-          year,
-          month,
-          sourceTable,
-          status,
-          gstr1aResponse: payload,
-          systemMetadata: {
-            fetchedAt: new Date().toISOString(),
-            username: identity.username,
-            dataSource: tracking.dataSource ?? 'sandbox',
-          },
-        },
-      },
-      { upsert: true },
-    );
-  }
-
   private async triggerAggregationForReturnType(
     returnType: 'GSTR-1' | 'GSTR-1A' | 'GSTR-2B' | 'GSTR-3B',
     identity: TaxpayerIdentity,
@@ -713,8 +677,10 @@ export class GstTaxpayerReturnsService {
       this.config.get<string>('GST_AGGREGATION_SOURCE_TABLE', 'gst_uploaded_file_data');
 
     const operationByReturnType: Record<string, string | null> = {
+      /* DISABLED: GSTR-1 / GSTR-1A
       'GSTR-1': VERIFY_GSTR_OPERATION,
       'GSTR-1A': null,
+      */
       'GSTR-2B': VERIFY_2B_OPERATION,
       'GSTR-3B': VERIFY_3B_OPERATION,
     };
@@ -750,9 +716,11 @@ export class GstTaxpayerReturnsService {
       await this.gstService.setJobProgress(job.id, 1);
       await this.gstService.finishJob(job.id, { autoAggregationTriggered: true });
 
+      /* DISABLED: GSTR-1 aggregation
       if (returnType === 'GSTR-1') {
         await this.gstAggregationService.triggerAfterGstrJob(job.id);
-      } else if (returnType === 'GSTR-2B') {
+      } else */
+      if (returnType === 'GSTR-2B') {
         await this.gstAggregationService.triggerAfterGstr2bJob(job.id);
       } else if (returnType === 'GSTR-3B') {
         await this.gstAggregationService.triggerAfterGstr3bJob(job.id);

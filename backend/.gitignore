@@ -87,3 +87,4 @@ $RECYCLE.BIN/
 
 # Uploaded files (if you ever switch to disk storage for multer)
 uploads/
+temp-uploads/

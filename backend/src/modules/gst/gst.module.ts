@@ -26,10 +26,6 @@ import {
   GstComplianceSchema,
 } from './schemas/gst-compliance.schema';
 import {
-  Gstr1ComplianceRecord,
-  Gstr1ComplianceSchema,
-} from './schemas/gst-gstr1-compliance.schema';
-import {
   Gstr2bComplianceRecord,
   Gstr2bComplianceSchema,
 } from './schemas/gst-gstr2b-compliance.schema';
@@ -37,10 +33,6 @@ import {
   Gstr3bComplianceRecord,
   Gstr3bComplianceSchema,
 } from './schemas/gst-gstr3b-compliance.schema';
-import {
-  Gstr1aComplianceRecord,
-  Gstr1aComplianceSchema,
-} from './schemas/gst-gstr1a-compliance.schema';
 
 const enableRabbitMQ = process.env.ENABLE_RABBITMQ === 'true';
 const enableMongo = process.env.ENABLE_MONGO === 'true';
@@ -59,10 +51,8 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
       ? [
           MongooseModule.forFeature([
             { name: GstComplianceRecord.name, schema: GstComplianceSchema },
-            { name: Gstr1ComplianceRecord.name, schema: Gstr1ComplianceSchema },
             { name: Gstr2bComplianceRecord.name, schema: Gstr2bComplianceSchema },
             { name: Gstr3bComplianceRecord.name, schema: Gstr3bComplianceSchema },
-            { name: Gstr1aComplianceRecord.name, schema: Gstr1aComplianceSchema },
           ]),
         ]
       : []),

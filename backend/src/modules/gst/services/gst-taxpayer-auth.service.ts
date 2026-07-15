@@ -17,7 +17,7 @@ import {
 import { GstAuthService } from './gst-auth.service';
 
 interface TaxpayerIdentity {
-  username: string;
+  username?: string;
   gstin: string;
 }
 
@@ -48,7 +48,7 @@ export class GstTaxpayerAuthService implements OnModuleInit, OnModuleDestroy {
   }
 
   async generateOtp(identity: TaxpayerIdentity): Promise<Record<string, any>> {
-    const normalized = this.normalizeIdentity(identity);
+    const normalized = await this.normalizeIdentity(identity);
     const session = await this.getOrCreateSession(normalized);
 
     try {
@@ -88,7 +88,7 @@ export class GstTaxpayerAuthService implements OnModuleInit, OnModuleDestroy {
   async submitOtp(
     identity: TaxpayerIdentity & { otp: string },
   ): Promise<Record<string, any>> {
-    const normalized = this.normalizeIdentity(identity);
+    const normalized = await this.normalizeIdentity(identity);
     const otp = String(identity.otp ?? '').trim();
     if (!otp) {
       throw new BadRequestException('"otp" is required.');
@@ -118,7 +118,7 @@ export class GstTaxpayerAuthService implements OnModuleInit, OnModuleDestroy {
   async verifyOtp(
     identity: TaxpayerIdentity & { otp: string },
   ): Promise<Record<string, any>> {
-    const normalized = this.normalizeIdentity(identity);
+    const normalized = await this.normalizeIdentity(identity);
     const session = await this.findSessionOrThrow(normalized);
     const otpValue = String(identity.otp ?? '').trim();
     if (!otpValue) {
@@ -203,7 +203,7 @@ export class GstTaxpayerAuthService implements OnModuleInit, OnModuleDestroy {
   }
 
   async refreshAccessToken(identity: TaxpayerIdentity): Promise<Record<string, any>> {
-    const normalized = this.normalizeIdentity(identity);
+    const normalized = await this.normalizeIdentity(identity);
     const session = await this.findSessionOrThrow(normalized);
     return this.refreshSession(session);
   }
@@ -212,13 +212,14 @@ export class GstTaxpayerAuthService implements OnModuleInit, OnModuleDestroy {
     identity: TaxpayerIdentity,
     refreshBeforeUse = true,
   ): Promise<string> {
-    const normalized = this.normalizeIdentity(identity);
+    const normalized = await this.normalizeIdentity(identity);
     const session = await this.findSessionOrThrow(normalized);
 
     if (!session.accessToken) {
       throw new BadRequestException(
         'Taxpayer session is not authenticated. Complete OTP verification first.',
       );
+   
    
     }
 
@@ -238,7 +239,7 @@ export class GstTaxpayerAuthService implements OnModuleInit, OnModuleDestroy {
   }
 
   async getSessionStatus(identity: TaxpayerIdentity): Promise<Record<string, any>> {
-    const normalized = this.normalizeIdentity(identity);
+    const normalized = await this.normalizeIdentity(identity);
     const session = await this.findSessionOrThrow(normalized);
     return {
       username: session.username,
@@ -286,21 +287,97 @@ export class GstTaxpayerAuthService implements OnModuleInit, OnModuleDestroy {
       .replace(/\/+$/, '');
   }
 
-  private normalizeIdentity(identity: TaxpayerIdentity): TaxpayerIdentity {
-    const username = String(identity.username ?? '').trim();
+  private async normalizeIdentity(
+    identity: TaxpayerIdentity,
+  ): Promise<{ username: string; gstin: string }> {
     const gstin = String(identity.gstin ?? '').trim().toUpperCase();
-
-    if (!username) {
-      throw new BadRequestException('"username" is required.');
-    }
     if (!gstin) {
       throw new BadRequestException('"gstin" is required.');
     }
+
+    let username = String(identity.username ?? '').trim();
+    if (!username) {
+      username = await this.resolveUsernameFromUploadTable(gstin);
+    }
+
     return { username, gstin };
   }
 
+  /**
+   * Loads taxpayer portal username from gst_uploaded_file_data.username
+   * for the given GSTIN (primary_gst_no or considered_entity_gst_no).
+   */
+  private async resolveUsernameFromUploadTable(gstin: string): Promise<string> {
+    const tableName = this.sanitizeTableName(
+      this.config.get<string>(
+        'GST_AGGREGATION_SOURCE_TABLE',
+        'gst_uploaded_file_data',
+      ),
+    );
+
+    const columns: Array<{ column_name: string }> = await this.dataSource.query(
+      `SELECT column_name
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = $1`,
+      [tableName],
+    );
+    const colSet = new Set(
+      columns.map((c) => String(c.column_name ?? '').toLowerCase()),
+    );
+
+    if (!colSet.has('username')) {
+      throw new BadRequestException(
+        `Column "username" not found in "${tableName}". Upload data must include a username column.`,
+      );
+    }
+
+    const gstColumns = [
+      'primary_gst_no',
+      'considered_entity_gst_no',
+      'gst_no',
+    ].filter((name) => colSet.has(name));
+
+    if (gstColumns.length === 0) {
+      throw new BadRequestException(
+        `No GSTIN column found in "${tableName}" (expected primary_gst_no / considered_entity_gst_no).`,
+      );
+    }
+
+    const whereClause = gstColumns
+      .map((col) => `UPPER(TRIM(COALESCE("${col}", ''))) = $1`)
+      .join(' OR ');
+
+    const rows: Array<{ username: string | null }> = await this.dataSource.query(
+  
+      `SELECT TRIM(username) AS username
+         FROM "${tableName}"
+        WHERE (${whereClause})
+          AND TRIM(COALESCE(username, '')) <> ''
+        LIMIT 1`,
+      [gstin],
+    );
+
+    const username = String(rows[0]?.username ?? '').trim();
+    if (!username) {
+      throw new NotFoundException(
+        `No username found in "${tableName}" for GSTIN "${gstin}".`,
+      );
+    }
+
+    return username;
+  }
+
+  private sanitizeTableName(rawTableName?: string): string {
+    const tableName = String(rawTableName ?? 'gst_uploaded_file_data').trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tableName)) {
+      throw new BadRequestException(`Invalid source table name: ${tableName}`);
+    }
+    return tableName;
+  }
+
   private async getOrCreateSession(
-    identity: TaxpayerIdentity,
+    identity: { username: string; gstin: string },
   ): Promise<TaxpayerAuthSession> {
     const existing = await this.sessionRepo.findOne({
       where: { username: identity.username, gstin: identity.gstin },
@@ -317,7 +394,7 @@ export class GstTaxpayerAuthService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async findSessionOrThrow(
-    identity: TaxpayerIdentity,
+    identity: { username: string; gstin: string },
   ): Promise<TaxpayerAuthSession> {
     const session = await this.sessionRepo.findOne({
       where: { username: identity.username, gstin: identity.gstin },

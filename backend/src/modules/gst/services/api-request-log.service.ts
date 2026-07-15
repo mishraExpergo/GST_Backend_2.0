@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import {
@@ -6,16 +6,18 @@ import {
   ApiRequestStatus,
 } from '../../../entities/api-request-log.entity';
 
+export type ApiLogGstrType =
+  | 'GST-RETURN'
+  | 'GST-NOTICES'
+  | 'GSTR'
+  | 'GSTR-2'
+  | 'GSTR-3'
+  | 'GSTR-2B'
+  | 'GSTR-3B';
+
 export interface ApiLogContext {
   gstrFamily: 'GSTIN' | 'GSTR';
-  gstrType:
-    | 'GST-RETURN'
-    | 'GSTR-1'
-    | 'GSTR-1A'
-    | 'GSTR-2'
-    | 'GSTR-3'
-    | 'GSTR-2B'
-    | 'GSTR-3B';
+  gstrType: ApiLogGstrType;
   apiName: string;
   associatedLoanId?: string | null;
   customerId?: string | null;
@@ -25,14 +27,7 @@ export interface ApiLogContext {
 }
 
 export interface ApiLogQuery {
-  gstrType?:
-    | 'GST-RETURN'
-    | 'GSTR-1'
-    | 'GSTR-1A'
-    | 'GSTR-2'
-    | 'GSTR-3'
-    | 'GSTR-2B'
-    | 'GSTR-3B';
+  gstrType?: ApiLogGstrType;
   status?: ApiRequestStatus;
   customerId?: string;
   associatedLoanId?: string;
@@ -47,6 +42,8 @@ export interface ApiLogQuery {
 
 @Injectable()
 export class ApiRequestLogService implements OnModuleInit {
+  private readonly logger = new Logger(ApiRequestLogService.name);
+
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
     @InjectRepository(ApiRequestLog)
@@ -54,9 +51,22 @@ export class ApiRequestLogService implements OnModuleInit {
   ) {}
 
   async onModuleInit(): Promise<void> {
-    await this.ensureTable();
+    try {
+      await this.ensureTable();
+    } catch (err) {
+      this.logger.error(
+        `Failed to ensure "api_request_logs" table during startup: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 
+  /**
+   * Starts a request log. Reuses an existing row for the same API identity
+   * (apiName + gstrType + gstNumber + loan/customer + year/month) and bumps
+   * retry_count instead of inserting a duplicate row.
+   */
   async createProcessingLog(context: ApiLogContext): Promise<ApiRequestLog> {
     const normalizedCustomerId =
       this.normalizeNullableText(context.customerId) ??
@@ -67,6 +77,31 @@ export class ApiRequestLogService implements OnModuleInit {
       (normalizedCustomerId && normalizedGstNumber
         ? `${normalizedCustomerId}:${normalizedGstNumber}`
         : null);
+    const normalizedDataSource = this.normalizeNullableText(context.dataSource);
+    const metadata = context.metadata ?? null;
+
+    const existing = await this.findExistingLog({
+      gstrType: context.gstrType,
+      apiName: context.apiName,
+      gstNumber: normalizedGstNumber,
+      associatedLoanId: normalizedAssociatedLoanId,
+      customerId: normalizedCustomerId,
+      metadata,
+    });
+
+    if (existing) {
+      existing.retryCount = (existing.retryCount ?? 0) + 1;
+      existing.status = 'PROCESSING';
+      existing.responseStatusCode = null;
+      existing.errorMessage = null;
+      existing.gstrFamily = context.gstrFamily;
+      existing.dataSource = normalizedDataSource ?? existing.dataSource;
+      existing.metadata = {
+        ...(existing.metadata ?? {}),
+        ...(metadata ?? {}),
+      };
+      return this.logRepo.save(existing);
+    }
 
     const log = this.logRepo.create({
       gstrFamily: context.gstrFamily,
@@ -77,8 +112,8 @@ export class ApiRequestLogService implements OnModuleInit {
       associatedLoanId: normalizedAssociatedLoanId,
       customerId: normalizedCustomerId,
       gstNumber: normalizedGstNumber,
-      dataSource: this.normalizeNullableText(context.dataSource),
-      metadata: context.metadata ?? null,
+      dataSource: normalizedDataSource,
+      metadata,
     });
     return this.logRepo.save(log);
   }
@@ -92,7 +127,11 @@ export class ApiRequestLogService implements OnModuleInit {
       .execute();
   }
 
-  async markSuccess(logId: string, statusCode: number, metadata?: Record<string, any>) {
+  async markSuccess(
+    logId: string,
+    statusCode: number,
+    metadata?: Record<string, any>,
+  ) {
     const existing = await this.logRepo.findOne({ where: { id: logId } });
     await this.logRepo.update(logId, {
       status: 'SUCCESS',
@@ -100,7 +139,7 @@ export class ApiRequestLogService implements OnModuleInit {
       errorMessage: null,
       metadata: metadata
         ? { ...(existing?.metadata ?? {}), ...metadata }
-        : existing?.metadata ?? null,
+        : (existing?.metadata ?? null),
     });
   }
 
@@ -117,7 +156,7 @@ export class ApiRequestLogService implements OnModuleInit {
       errorMessage,
       metadata: metadata
         ? { ...(existing?.metadata ?? {}), ...metadata }
-        : existing?.metadata ?? null,
+        : (existing?.metadata ?? null),
     });
   }
 
@@ -136,22 +175,103 @@ export class ApiRequestLogService implements OnModuleInit {
       .take(limit)
       .skip(offset);
 
-    if (query.gstrType) qb.andWhere('log.gstrType = :gstrType', { gstrType: query.gstrType });
-    if (query.status) qb.andWhere('log.status = :status', { status: query.status });
-    if (query.customerId) qb.andWhere('log.customerId = :customerId', { customerId: query.customerId });
+    if (query.gstrType)
+      qb.andWhere('log.gstrType = :gstrType', { gstrType: query.gstrType });
+    if (query.status)
+      qb.andWhere('log.status = :status', { status: query.status });
+    if (query.customerId)
+      qb.andWhere('log.customerId = :customerId', {
+        customerId: query.customerId,
+      });
     if (query.associatedLoanId) {
       qb.andWhere('log.associatedLoanId = :associatedLoanId', {
         associatedLoanId: query.associatedLoanId,
       });
     }
-    if (query.gstNumber) qb.andWhere('log.gstNumber = :gstNumber', { gstNumber: query.gstNumber });
-    if (query.dataSource) qb.andWhere('log.dataSource = :dataSource', { dataSource: query.dataSource });
-    if (query.apiName) qb.andWhere('log.apiName = :apiName', { apiName: query.apiName });
-    if (query.fromDate) qb.andWhere('log.createdAt >= :fromDate', { fromDate: query.fromDate });
-    if (query.toDate) qb.andWhere('log.createdAt <= :toDate', { toDate: query.toDate });
+    if (query.gstNumber)
+      qb.andWhere('log.gstNumber = :gstNumber', { gstNumber: query.gstNumber });
+    if (query.dataSource)
+      qb.andWhere('log.dataSource = :dataSource', {
+        dataSource: query.dataSource,
+      });
+    if (query.apiName)
+      qb.andWhere('log.apiName = :apiName', { apiName: query.apiName });
+    if (query.fromDate)
+      qb.andWhere('log.createdAt >= :fromDate', { fromDate: query.fromDate });
+    if (query.toDate)
+      qb.andWhere('log.createdAt <= :toDate', { toDate: query.toDate });
 
     const [items, total] = await qb.getManyAndCount();
     return { items, total, limit, offset };
+  }
+
+  private async findExistingLog(params: {
+    gstrType: string;
+    apiName: string;
+    gstNumber: string | null;
+    associatedLoanId: string | null;
+    customerId: string | null;
+    metadata: Record<string, any> | null;
+  }): Promise<ApiRequestLog | null> {
+    const qb = this.logRepo
+      .createQueryBuilder('log')
+      .where('log.gstrType = :gstrType', { gstrType: params.gstrType })
+      .andWhere('log.apiName = :apiName', { apiName: params.apiName })
+      .orderBy('log.updatedAt', 'DESC')
+      .take(1);
+
+    if (params.gstNumber) {
+      qb.andWhere('log.gstNumber = :gstNumber', {
+        gstNumber: params.gstNumber,
+      });
+    } else {
+      qb.andWhere('log.gstNumber IS NULL');
+    }
+
+    if (params.associatedLoanId) {
+      qb.andWhere('log.associatedLoanId = :associatedLoanId', {
+        associatedLoanId: params.associatedLoanId,
+      });
+    } else if (params.customerId) {
+      qb.andWhere('log.customerId = :customerId', {
+        customerId: params.customerId,
+      });
+    }
+
+    const year = params.metadata?.year;
+    const month = params.metadata?.month;
+    const financialYear = params.metadata?.financialYear;
+    const date = params.metadata?.date;
+    const referenceId = params.metadata?.referenceId;
+    if (year !== undefined && year !== null && String(year).trim() !== '') {
+      qb.andWhere(`log.metadata->>'year' = :year`, { year: String(year) });
+    }
+    if (month !== undefined && month !== null && String(month).trim() !== '') {
+      qb.andWhere(`log.metadata->>'month' = :month`, { month: String(month) });
+    }
+    if (
+      financialYear !== undefined &&
+      financialYear !== null &&
+      String(financialYear).trim() !== ''
+    ) {
+      qb.andWhere(`log.metadata->>'financialYear' = :financialYear`, {
+        financialYear: String(financialYear),
+      });
+    }
+    if (date !== undefined && date !== null && String(date).trim() !== '') {
+      qb.andWhere(`log.metadata->>'date' = :date`, { date: String(date) });
+    }
+    if (
+      referenceId !== undefined &&
+      referenceId !== null &&
+      String(referenceId).trim() !== ''
+    ) {
+      qb.andWhere(`log.metadata->>'referenceId' = :referenceId`, {
+        referenceId: String(referenceId),
+      });
+    }
+
+    return qb.getOne();
   }
 
   private async ensureTable(): Promise<void> {
@@ -181,3 +301,4 @@ export class ApiRequestLogService implements OnModuleInit {
     return normalized ? normalized : null;
   }
 }
+

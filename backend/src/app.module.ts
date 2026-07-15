@@ -8,6 +8,7 @@ import { AppService } from './app.service';
 import { toNumber } from './config/database.config';
 import { GstModule } from './modules/gst/gst.module';
 import { AuthModule } from './auth/auth.module';
+import { SchemaBootstrapService } from './database/schema-bootstrap.service';
 
 const enableMongo = process.env.ENABLE_MONGO === 'true';
 
@@ -47,6 +48,6 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
     AuthModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [AppService, SchemaBootstrapService],
 })
 export class AppModule {}
