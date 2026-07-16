@@ -228,6 +228,7 @@ function computeSummary(
       'reverseChargeSuppliesAmount',
       'reverse_charge_sales_amount',
       'reverseChargeSalesAmount',
+      
     );
     taxableSuppliesAmount += sumForAliases(
       allFacts,

@@ -10,12 +10,12 @@ import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import { GstTaxpayerAuthService } from './gst-taxpayer-auth.service';
 import { ApiRequestLogService } from './api-request-log.service';
-import { GstService } from '../gst.service';
-import { GstAggregationService } from './gst-aggregation.service';
 import { resolveGstApiCredentials } from './gst-api-credentials.util';
+import { GstReturnPersistenceService } from './gst-return-persistence.service';
+import { getRequiredMonthsForYear } from './gst-return-month-coverage.util';
 
 interface TaxpayerIdentity {
-  username: string;
+  username?: string;
   gstin: string;
 }
 
@@ -27,12 +27,6 @@ interface RequestTrackingContext {
   skipAutoAggregationTrigger?: boolean;
 }
 
-/* DISABLED: GSTR-1
-const VERIFY_GSTR_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR';
-*/
-const VERIFY_2B_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_2B';
-const VERIFY_3B_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_3B';
-
 @Injectable()
 export class GstTaxpayerReturnsService {
   private readonly logger = new Logger(GstTaxpayerReturnsService.name);
@@ -42,9 +36,48 @@ export class GstTaxpayerReturnsService {
     private readonly config: ConfigService,
     private readonly taxpayerAuthService: GstTaxpayerAuthService,
     private readonly apiRequestLogService: ApiRequestLogService,
-    private readonly gstService: GstService,
-    private readonly gstAggregationService: GstAggregationService,
+    private readonly returnPersistenceService: GstReturnPersistenceService,
   ) {}
+
+  async fetchGstr1ForYear(
+    _identity: TaxpayerIdentity,
+    _year: number,
+    _tracking: RequestTrackingContext = {},
+  ): Promise<Record<string, any>> {
+    throw new ServiceUnavailableException(
+      'GSTR-1 / GSTR-1A temporarily disabled.',
+    );
+  }
+
+  async fetchGstr2bForYear(
+    identity: TaxpayerIdentity,
+    year: number,
+    tracking: RequestTrackingContext = {},
+  ): Promise<Record<string, any>> {
+    const resolvedIdentity =
+      await this.taxpayerAuthService.resolveTaxpayerIdentity(identity);
+    return this.fetchReturnForYear(
+      resolvedIdentity,
+      'GSTR-2B',
+      year,
+      tracking,
+    );
+  }
+
+  async fetchGstr3bForYear(
+    identity: TaxpayerIdentity,
+    year: number,
+    tracking: RequestTrackingContext = {},
+  ): Promise<Record<string, any>> {
+    const resolvedIdentity =
+      await this.taxpayerAuthService.resolveTaxpayerIdentity(identity);
+    return this.fetchReturnForYear(
+      resolvedIdentity,
+      'GSTR-3B',
+      year,
+      tracking,
+    );
+  }
 
   async fetchGstr1(
     _identity: TaxpayerIdentity,
@@ -78,8 +111,10 @@ export class GstTaxpayerReturnsService {
     month: number,
     tracking: RequestTrackingContext = {},
   ): Promise<Record<string, any>> {
+    const resolvedIdentity =
+      await this.taxpayerAuthService.resolveTaxpayerIdentity(identity);
     const { normalizedIdentity, yearNum, monthNum } = this.validateInputs(
-      identity,
+      resolvedIdentity,
       year,
       month,
     );
@@ -99,8 +134,10 @@ export class GstTaxpayerReturnsService {
     month: number,
     tracking: RequestTrackingContext = {},
   ): Promise<Record<string, any>> {
+    const resolvedIdentity =
+      await this.taxpayerAuthService.resolveTaxpayerIdentity(identity);
     const { normalizedIdentity, yearNum, monthNum } = this.validateInputs(
-      identity,
+      resolvedIdentity,
       year,
       month,
     );
@@ -401,6 +438,41 @@ export class GstTaxpayerReturnsService {
     month: number,
     tracking: RequestTrackingContext,
   ): Promise<Record<string, any>> {
+    const isPersistedReturn =
+      returnType === 'GSTR-1' ||
+      returnType === 'GSTR-2B' ||
+      returnType === 'GSTR-3B';
+
+    let persistenceContext:
+      | { customerId: string; associatedLoanId: string }
+      | null = null;
+
+    if (isPersistedReturn) {
+      this.returnPersistenceService.assertMongoEnabled();
+      persistenceContext =
+        this.returnPersistenceService.validatePersistenceContext(tracking);
+
+      const cached = await this.returnPersistenceService.findExisting(
+        returnType,
+        persistenceContext.associatedLoanId,
+        identity.gstin,
+        year,
+        month,
+      );
+      if (cached) {
+        return {
+          message: `${returnType} served from MongoDB (already fetched for this GSTIN).`,
+          username: identity.username,
+          gstin: identity.gstin,
+          year,
+          month,
+          fromCache: true,
+          stored: false,
+          data: cached,
+        };
+      }
+    }
+
     const maxRetries = Number(this.config.get('GST_API_MAX_RETRIES', '3'));
     const baseDelay = Number(this.config.get('GST_API_RETRY_BASE_MS', '500'));
     const forceRefreshPerRequest =
@@ -518,13 +590,21 @@ export class GstTaxpayerReturnsService {
         });
       }
 
-      if (!tracking.skipAutoAggregationTrigger) {
-        await this.triggerAggregationForReturnType(
+      let storageResult: { stored: boolean; reason: string } | null = null;
+      if (isPersistedReturn && persistenceContext) {
+        storageResult = await this.returnPersistenceService.storeIfAbsent(
           returnType,
-          identity,
+          {
+            customerId: persistenceContext.customerId,
+            associatedLoanId: persistenceContext.associatedLoanId,
+            gstin: identity.gstin,
+            username: identity.username ?? '',
+            dataSource: tracking.dataSource,
+            sourceTable: tracking.sourceTable,
+          },
           year,
           month,
-          tracking,
+          response.data ?? {},
         );
       }
 
@@ -534,9 +614,157 @@ export class GstTaxpayerReturnsService {
         gstin: identity.gstin,
         year,
         month,
+        fromCache: false,
+        stored: storageResult?.stored ?? false,
+        storageReason: storageResult?.reason ?? 'not_applicable',
         data: response.data,
       };
     }
+  }
+
+  private async fetchReturnForYear(
+    identity: TaxpayerIdentity,
+    returnType: 'GSTR-1' | 'GSTR-2B' | 'GSTR-3B',
+    year: number,
+    tracking: RequestTrackingContext,
+  ): Promise<Record<string, any>> {
+    const { normalizedIdentity, yearNum } = this.validateYearOnly(identity, year);
+    const monthlyResults: Array<Record<string, any>> = [];
+    let monthsFromCache = 0;
+    let monthsStored = 0;
+    let monthsFetched = 0;
+    let monthsFailed = 0;
+    let monthsSkipped = 0;
+
+    const requiredMonths = getRequiredMonthsForYear(yearNum);
+    let missingMonths = [...requiredMonths];
+    let persistenceContext: { customerId: string; associatedLoanId: string } | null =
+      null;
+
+    this.returnPersistenceService.assertMongoEnabled();
+    persistenceContext =
+      this.returnPersistenceService.validatePersistenceContext(tracking);
+    missingMonths = await this.returnPersistenceService.getMissingMonthsForYear(
+      returnType,
+      persistenceContext.associatedLoanId,
+      normalizedIdentity.gstin,
+      yearNum,
+    );
+
+    for (const month of requiredMonths) {
+      if (!missingMonths.includes(month)) {
+        monthsSkipped++;
+        try {
+          const cached = await this.returnPersistenceService.findExisting(
+            returnType,
+            persistenceContext.associatedLoanId,
+            normalizedIdentity.gstin,
+            yearNum,
+            month,
+          );
+          monthlyResults.push({
+            message: `${returnType} served from MongoDB (already fetched for this GSTIN).`,
+            username: normalizedIdentity.username,
+            gstin: normalizedIdentity.gstin,
+            year: yearNum,
+            month,
+            fromCache: true,
+            stored: false,
+            data: cached,
+          });
+          monthsFromCache++;
+        } catch (err) {
+          monthsFailed++;
+          monthlyResults.push({
+            month,
+            year: yearNum,
+            failed: true,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    }
+
+    for (const month of missingMonths) {
+      try {
+        const path = this.buildReturnPath(returnType, yearNum, month);
+        const result = await this.fetchReturn(
+          normalizedIdentity,
+          path,
+          returnType,
+          yearNum,
+          month,
+          tracking,
+        );
+        monthlyResults.push(result);
+        if (result.fromCache) {
+          monthsFromCache++;
+        } else if (result.stored) {
+          monthsStored++;
+        } else {
+          monthsFetched++;
+        }
+      } catch (err) {
+        monthsFailed++;
+        monthlyResults.push({
+          month,
+          year: yearNum,
+          failed: true,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    monthlyResults.sort((a, b) => Number(a.month ?? 0) - Number(b.month ?? 0));
+
+    return {
+      message: `${returnType} year fetch completed for ${yearNum}.`,
+      username: normalizedIdentity.username,
+      gstin: normalizedIdentity.gstin,
+      year: yearNum,
+      monthsRequired: requiredMonths.length,
+      monthsProcessed: requiredMonths.length,
+      monthsFromCache,
+      monthsSkipped,
+      monthsStored,
+      monthsFetched,
+      monthsFailed,
+      monthsMissingBeforeFetch: missingMonths.length,
+      monthlyResults,
+    };
+  }
+
+  private buildReturnPath(
+    returnType: 'GSTR-1' | 'GSTR-2B' | 'GSTR-3B',
+    year: number,
+    month: number,
+  ): string {
+    const slug =
+      returnType === 'GSTR-1'
+        ? 'gstr-1'
+        : returnType === 'GSTR-2B'
+          ? 'gstr-2b'
+          : 'gstr-3b';
+    return `/gst/compliance/tax-payer/gstrs/${slug}/${year}/${month}`;
+  }
+
+  private validateYearOnly(
+    identity: TaxpayerIdentity,
+    year: number,
+  ): { normalizedIdentity: TaxpayerIdentity; yearNum: number } {
+    const username = String(identity.username ?? '').trim();
+    const gstin = String(identity.gstin ?? '').trim().toUpperCase();
+    const yearNum = Number(year);
+
+    if (!username) throw new BadRequestException('"username" is required.');
+    if (!gstin) throw new BadRequestException('"gstin" is required.');
+    if (!Number.isInteger(yearNum) || yearNum < 2017 || yearNum > 2100) {
+      throw new BadRequestException(
+        `Invalid "year" "${year}". Expected a 4-digit year (e.g. 2024).`,
+      );
+    }
+
+    return { normalizedIdentity: { username, gstin }, yearNum };
   }
 
   private validateInputs(
@@ -657,80 +885,4 @@ export class GstTaxpayerReturnsService {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  private async triggerAggregationForReturnType(
-    returnType: 'GSTR-1' | 'GSTR-1A' | 'GSTR-2B' | 'GSTR-3B',
-    identity: TaxpayerIdentity,
-    year: number,
-    month: number,
-    tracking: RequestTrackingContext,
-  ): Promise<void> {
-    const customerId = String(tracking.customerId ?? '').trim();
-    if (!customerId) {
-      this.logger.debug(
-        `${returnType}: skipping auto-aggregation trigger because "customerId" is missing.`,
-      );
-      return;
-    }
-
-    const sourceTable =
-      String(tracking.sourceTable ?? '').trim() ||
-      this.config.get<string>('GST_AGGREGATION_SOURCE_TABLE', 'gst_uploaded_file_data');
-
-    const operationByReturnType: Record<string, string | null> = {
-      /* DISABLED: GSTR-1 / GSTR-1A
-      'GSTR-1': VERIFY_GSTR_OPERATION,
-      'GSTR-1A': null,
-      */
-      'GSTR-2B': VERIFY_2B_OPERATION,
-      'GSTR-3B': VERIFY_3B_OPERATION,
-    };
-    const operation = operationByReturnType[returnType];
-    if (!operation) {
-      return;
-    }
-
-    try {
-      const job = await this.gstService.createJob('API', {
-        operation,
-        sourceTable,
-        triggerSource: 'taxpayer-returns',
-        gstrType: returnType,
-        customerId,
-        associatedLoanId: tracking.associatedLoanId ?? null,
-        username: identity.username,
-        gstin: identity.gstin,
-        year,
-        month,
-      });
-
-      await this.gstService.setJobTotalChunks(job.id, 1);
-      const task = await this.gstService.createTask(job.id, {
-        tableName: sourceTable,
-        batchIndex: 0,
-        totalBatches: 1,
-        rows: [{ customer_id: customerId }],
-      });
-      await this.gstService.markTask(task.id, 'COMPLETED', {
-        result: { totalRows: 1, stored: 1 },
-      });
-      await this.gstService.setJobProgress(job.id, 1);
-      await this.gstService.finishJob(job.id, { autoAggregationTriggered: true });
-
-      /* DISABLED: GSTR-1 aggregation
-      if (returnType === 'GSTR-1') {
-        await this.gstAggregationService.triggerAfterGstrJob(job.id);
-      } else */
-      if (returnType === 'GSTR-2B') {
-        await this.gstAggregationService.triggerAfterGstr2bJob(job.id);
-      } else if (returnType === 'GSTR-3B') {
-        await this.gstAggregationService.triggerAfterGstr3bJob(job.id);
-      }
-    } catch (err) {
-      this.logger.error(
-        `${returnType}: auto-aggregation trigger failed for customerId=${customerId}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
-  }
 }

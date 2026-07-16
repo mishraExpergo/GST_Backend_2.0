@@ -22,6 +22,7 @@ import { GstComplianceService } from './services/gst-compliance.service';
 import { GstTaxpayerAuthService } from './services/gst-taxpayer-auth.service';
 import { GstTaxpayerReturnsService } from './services/gst-taxpayer-returns.service';
 import { ApiRequestLogService } from './services/api-request-log.service';
+import { GstReturnAggregationSchedulerService } from './services/gst-return-aggregation-scheduler.service';
 import { FileStorageService } from '../shared/services/file-storage.service';
 import type { ApiRequestStatus } from '../../entities/api-request-log.entity';
 
@@ -34,6 +35,7 @@ export class GstController {
     private readonly gstTaxpayerAuthService: GstTaxpayerAuthService,
     private readonly gstTaxpayerReturnsService: GstTaxpayerReturnsService,
     private readonly apiRequestLogService: ApiRequestLogService,
+    private readonly returnAggregationScheduler: GstReturnAggregationSchedulerService,
     @Optional() @Inject('EXCEL_SERVICE') private readonly excelClient?: ClientProxy,
   ) {}
 
@@ -376,72 +378,85 @@ export class GstController {
   }
 
   /**
-   * GET /gst/taxpayer/gstr-1/:year/:month
-   * DISABLED: GSTR-1 / GSTR-1A temporarily disabled.
+   * GET /gst/gstr1-return?gstin=...&customerId=...&associatedLoanId=...&year=2024
+   * Fetches one GSTIN's GSTR-1 filing track data via the public Sandbox track API.
+   * Skips Sandbox when Mongo already has all required months (Jan..current month) for the year.
+   * Uses platform auth (no taxpayer OTP). Stores in Mongo collection
+   * gst_gstR1_returns_compliance_data if absent; no aggregation.
    */
-  @Get('taxpayer/gstr-1/:year/:month')
-  async fetchTaxpayerGstr1(
-    @Param('year') _year: string,
-    @Param('month') _month: string,
-    @Query('username') _username?: string,
+  @Get('gstr1-return')
+  async fetchGstr1Return(
     @Query('gstin') _gstin?: string,
     @Query('associatedLoanId') _associatedLoanId?: string,
     @Query('customerId') _customerId?: string,
+    @Query('year') _year?: string,
     @Query('dataSource') _dataSource?: string,
+    @Query('tableName') _tableName?: string,
   ) {
-    /* DISABLED: GSTR-1
-    const data = await this.gstTaxpayerReturnsService.fetchGstr1(
-      { username, gstin },
-      Number(year),
-      Number(month),
-      { associatedLoanId, customerId, dataSource },
-    );
-    return this.successResponse('taxpayer-returns.gstr-1', data);
-    */
     throw new ServiceUnavailableException(
       'GSTR-1 / GSTR-1A temporarily disabled.',
     );
   }
 
   /**
-   * GET /gst/taxpayer/gstr-2b/:year/:month?username=...&gstin=...
+   * GET /gst/taxpayer/gstr-1/:year
+   * Fetches one GSTIN's GSTR-1 for all 12 months of the calendar year.
    */
-  @Get('taxpayer/gstr-2b/:year/:month')
+  @Get('taxpayer/gstr-1/:year')
+  async fetchTaxpayerGstr1(
+    @Param('year') _year: string,
+    @Query('username') _username?: string,
+    @Query('gstin') _gstin?: string,
+    @Query('associatedLoanId') _associatedLoanId?: string,
+    @Query('customerId') _customerId?: string,
+    @Query('dataSource') _dataSource?: string,
+  ) {
+    throw new ServiceUnavailableException(
+      'GSTR-1 / GSTR-1A temporarily disabled.',
+    );
+  }
+
+  /**
+   * GET /gst/taxpayer/gstr-2b/:year
+   * Cache-first year fetch. Uses Mongo for existing months and calls Sandbox
+   * only for missing months. Username is resolved from upload data when omitted.
+   * Required query: gstin, customerId, associatedLoanId.
+   */
+  @Get('taxpayer/gstr-2b/:year')
   async fetchTaxpayerGstr2b(
     @Param('year') year: string,
-    @Param('month') month: string,
-    @Query('username') username: string,
+    @Query('username') username: string | undefined,
     @Query('gstin') gstin: string,
-    @Query('associatedLoanId') associatedLoanId?: string,
-    @Query('customerId') customerId?: string,
+    @Query('associatedLoanId') associatedLoanId: string,
+    @Query('customerId') customerId: string,
     @Query('dataSource') dataSource?: string,
   ) {
-    const data = await this.gstTaxpayerReturnsService.fetchGstr2b(
+    const data = await this.gstTaxpayerReturnsService.fetchGstr2bForYear(
       { username, gstin },
       Number(year),
-      Number(month),
       { associatedLoanId, customerId, dataSource },
     );
     return this.successResponse('taxpayer-returns.gstr-2b', data);
   }
 
   /**
-   * GET /gst/taxpayer/gstr-3b/:year/:month?username=...&gstin=...
+   * GET /gst/taxpayer/gstr-3b/:year
+   * Cache-first year fetch. Uses Mongo for existing months and calls Sandbox
+   * only for missing months. Username is resolved from upload data when omitted.
+   * Required query: gstin, customerId, associatedLoanId.
    */
-  @Get('taxpayer/gstr-3b/:year/:month')
+  @Get('taxpayer/gstr-3b/:year')
   async fetchTaxpayerGstr3b(
     @Param('year') year: string,
-    @Param('month') month: string,
-    @Query('username') username: string,
+    @Query('username') username: string | undefined,
     @Query('gstin') gstin: string,
-    @Query('associatedLoanId') associatedLoanId?: string,
-    @Query('customerId') customerId?: string,
+    @Query('associatedLoanId') associatedLoanId: string,
+    @Query('customerId') customerId: string,
     @Query('dataSource') dataSource?: string,
   ) {
-    const data = await this.gstTaxpayerReturnsService.fetchGstr3b(
+    const data = await this.gstTaxpayerReturnsService.fetchGstr3bForYear(
       { username, gstin },
       Number(year),
-      Number(month),
       { associatedLoanId, customerId, dataSource },
     );
     return this.successResponse('taxpayer-returns.gstr-3b', data);
@@ -578,6 +593,73 @@ export class GstController {
     });
 
     return this.successResponse('taxpayer-returns.api-logs', data);
+  }
+
+  /**
+   * POST /gst/scheduler/aggregate-returns
+   * Checks Mongo GSTR-1 / 2B / 3B collections per customer+loan and runs
+   * aggregation when every expected GSTIN (primary + considered entity) for that loan is present.
+   * GSTR-1 metrics go to primary_gst_aggregation (PRIMARY_*) and secondary_gst_aggregation (CONSIDERED_*).
+   *
+   * body:
+   *   - year (required)
+   *   - month (optional; omit to require all 12 months for the year)
+   *   - returnType: GSTR-1 | GSTR-2B | GSTR-3B | ALL (default ALL)
+   *   - customerId (optional filter)
+   *   - loanId (optional filter)
+   *   - tableName (optional, default gst_uploaded_file_data)
+   */
+  @Post('scheduler/aggregate-returns')
+  @HttpCode(HttpStatus.OK)
+  async runReturnAggregationScheduler(
+    @Body('year') year: number,
+    @Body('month') month?: number,
+    @Body('returnType') returnType?: 'GSTR-1' | 'GSTR-2B' | 'GSTR-3B' | 'ALL',
+    @Body('customerId') customerId?: string,
+    @Body('loanId') loanId?: string,
+    @Body('tableName') tableName?: string,
+  ) {
+    if (!this.returnAggregationScheduler) {
+      throw new BadRequestException(
+        'Return aggregation scheduler is not available.',
+      );
+    }
+
+    const yearNum = Number(year);
+    if (!Number.isInteger(yearNum) || yearNum < 2017 || yearNum > 2100) {
+      throw new BadRequestException(
+        `Invalid "year" "${year}". Expected a 4-digit year (e.g. 2024).`,
+      );
+    }
+
+    const normalizedReturnType = returnType ?? 'ALL';
+    const allowedReturnTypes = new Set(['GSTR-1', 'GSTR-2B', 'GSTR-3B', 'ALL']);
+    if (!allowedReturnTypes.has(normalizedReturnType)) {
+      throw new BadRequestException(
+        'Invalid returnType. Allowed: GSTR-1, GSTR-2B, GSTR-3B, ALL.',
+      );
+    }
+
+    let monthNum: number | undefined;
+    if (month !== undefined && month !== null && String(month).trim() !== '') {
+      monthNum = Number(month);
+      if (!Number.isInteger(monthNum) || monthNum < 1 || monthNum > 12) {
+        throw new BadRequestException(
+          `Invalid "month" "${month}". Expected a number between 1 and 12.`,
+        );
+      }
+    }
+
+    const data = await this.returnAggregationScheduler.run({
+      returnType: normalizedReturnType,
+      year: yearNum,
+      month: monthNum,
+      customerId,
+      loanId,
+      tableName,
+    });
+
+    return this.successResponse('scheduler.aggregate-returns', data);
   }
 
   /**

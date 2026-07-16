@@ -253,6 +253,16 @@ export class GstTaxpayerAuthService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  /**
+   * Resolves a taxpayer username from the request or the uploaded GST data.
+   * Return-fetch services use this so callers only need to provide a GSTIN.
+   */
+  async resolveTaxpayerIdentity(
+    identity: TaxpayerIdentity,
+  ): Promise<{ username: string; gstin: string }> {
+    return this.normalizeIdentity(identity);
+  }
+
   private get otpTtlMinutes(): number {
     return Math.max(
       1,

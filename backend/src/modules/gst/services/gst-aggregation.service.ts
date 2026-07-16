@@ -20,7 +20,6 @@ import { Gstr2bComplianceRecord } from '../schemas/gst-gstr2b-compliance.schema'
 import { Gstr3bComplianceRecord } from '../schemas/gst-gstr3b-compliance.schema';
 
 import {
-
   mergeAggregationVariable,
 
   preserveMetricKeys,
@@ -40,6 +39,7 @@ import {
   getGstr3bRecordsForPan,
   normalizePan as normalizePanFrom3bUtil,
 } from './gst-gstr3b-aggregation.util';
+import { GstAggregationHistoryService } from './gst-aggregation-history.service';
 
 
 
@@ -184,6 +184,10 @@ const VERIFY_FETCH_OPERATION = 'GSTIN_VERIFY_AND_FETCH';
 const VERIFY_2B_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_2B';
 const VERIFY_3B_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_3B';
 const OBSOLETE_GSTR3B_KEYS = ['PRIMARY_TOTAL_TURNOVER', 'CONSIDERED_TOTAL_TURNOVER'] as const;
+const HISTORY_SOURCE_VERIFY_FETCH = 'VERIFY_FETCH';
+const HISTORY_SOURCE_GSTR1 = 'GSTR-1';
+const HISTORY_SOURCE_GSTR2B = 'GSTR-2B';
+const HISTORY_SOURCE_GSTR3B = 'GSTR-3B';
 
 @Injectable()
 export class GstAggregationService {
@@ -205,6 +209,8 @@ export class GstAggregationService {
     @InjectRepository(SecondaryGstAggregation)
 
     private readonly secondaryAggRepo: Repository<SecondaryGstAggregation>,
+
+    private readonly aggregationHistoryService: GstAggregationHistoryService,
 
     @Optional()
 
@@ -538,11 +544,21 @@ export class GstAggregationService {
     }
 
     if (primaryRowsToSave.length > 0) {
-      await this.primaryAggRepo.save(primaryRowsToSave);
+      await this.aggregationHistoryService.upsertPrimaryAggregation(
+        this.primaryAggRepo,
+        primaryRowsToSave,
+        existingPrimaryByLoan,
+        HISTORY_SOURCE_GSTR2B,
+      );
     }
 
     if (secondaryRowsToSave.length > 0) {
-      await this.secondaryAggRepo.save(secondaryRowsToSave);
+      await this.aggregationHistoryService.upsertSecondaryAggregation(
+        this.secondaryAggRepo,
+        secondaryRowsToSave,
+        existingSecondaryByLoan,
+        HISTORY_SOURCE_GSTR2B,
+      );
     }
 
     this.logger.log(
@@ -709,11 +725,21 @@ export class GstAggregationService {
     }
 
     if (primaryRowsToSave.length > 0) {
-      await this.primaryAggRepo.save(primaryRowsToSave);
+      await this.aggregationHistoryService.upsertPrimaryAggregation(
+        this.primaryAggRepo,
+        primaryRowsToSave,
+        existingPrimaryByLoan,
+        HISTORY_SOURCE_GSTR3B,
+      );
     }
 
     if (secondaryRowsToSave.length > 0) {
-      await this.secondaryAggRepo.save(secondaryRowsToSave);
+      await this.aggregationHistoryService.upsertSecondaryAggregation(
+        this.secondaryAggRepo,
+        secondaryRowsToSave,
+        existingSecondaryByLoan,
+        HISTORY_SOURCE_GSTR3B,
+      );
     }
 
     this.logger.log(
@@ -886,10 +912,6 @@ export class GstAggregationService {
 
 
 
-    await this.primaryAggRepo.delete({ customerId: context.customerId });
-
-
-
     const uploadRows = await this.getUploadRowsForCustomer(
 
       context.customerId,
@@ -899,40 +921,29 @@ export class GstAggregationService {
     );
 
     if (uploadRows.length === 0) {
-
+      await this.aggregationHistoryService.replacePrimaryAggregation(
+        this.primaryAggRepo,
+        context.customerId,
+        [],
+        HISTORY_SOURCE_VERIFY_FETCH,
+      );
       return;
-
     }
-
-
 
     const rows: Partial<PrimaryGstAggregation>[] = [];
 
-
-
     for (const uploadRow of uploadRows) {
-
       const primaryPan = this.normalizePan(uploadRow.primary_pan);
 
       if (!primaryPan) {
-
         continue;
-
       }
 
-
-
       const panRecords = allComplianceRecords.filter(
-
         (record) => this.getRecordPan(record) === primaryPan,
-
       );
 
-
-
       const metrics = this.computePrimaryAggregationMetrics(panRecords);
-
-
 
       const existingJson = existingByLoan.get(uploadRow.associated_loan_id) ?? null;
       const aggregationObject = this.buildAggregationObject(
@@ -946,16 +957,14 @@ export class GstAggregationService {
         associatedLoanId: uploadRow.associated_loan_id,
         aggregationVariable: aggregationObject,
       });
-
     }
 
-
-
-    if (rows.length > 0) {
-
-      await this.primaryAggRepo.save(rows);
-
-    }
+    await this.aggregationHistoryService.replacePrimaryAggregation(
+      this.primaryAggRepo,
+      context.customerId,
+      rows,
+      HISTORY_SOURCE_VERIFY_FETCH,
+    );
 
 
 
@@ -987,10 +996,6 @@ export class GstAggregationService {
 
   ): Promise<void> {
 
-    await this.secondaryAggRepo.delete({ customerId: context.customerId });
-
-
-
     const uploadRows = await this.getUploadRowsForCustomer(
 
       context.customerId,
@@ -1000,44 +1005,31 @@ export class GstAggregationService {
     );
 
     if (uploadRows.length === 0) {
-
+      await this.aggregationHistoryService.replaceSecondaryAggregation(
+        this.secondaryAggRepo,
+        context.customerId,
+        [],
+        HISTORY_SOURCE_VERIFY_FETCH,
+      );
       return;
-
     }
-
-
 
     const rows: Partial<SecondaryGstAggregation>[] = [];
 
-
-
     for (const uploadRow of uploadRows) {
-
       const consideredEntityPan = this.normalizePan(
-
         uploadRow.considered_entity_pan,
-
       );
 
       if (!consideredEntityPan) {
-
         continue;
-
       }
 
-
-
       const panRecords = allComplianceRecords.filter(
-
         (record) => this.getRecordPan(record) === consideredEntityPan,
-
       );
 
-
-
       const metrics = this.computeSecondaryAggregationMetrics(panRecords);
-
-
 
       const aggregationObject = JSON.stringify(metrics);
       rows.push({
@@ -1045,16 +1037,14 @@ export class GstAggregationService {
         associatedLoanId: uploadRow.associated_loan_id,
         aggregationVariable: aggregationObject,
       });
-
     }
 
-
-
-    if (rows.length > 0) {
-
-      await this.secondaryAggRepo.save(rows);
-
-    }
+    await this.aggregationHistoryService.replaceSecondaryAggregation(
+      this.secondaryAggRepo,
+      context.customerId,
+      rows,
+      HISTORY_SOURCE_VERIFY_FETCH,
+    );
 
 
 

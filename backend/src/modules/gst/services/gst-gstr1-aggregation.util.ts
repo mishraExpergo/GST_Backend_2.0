@@ -6,6 +6,14 @@ export interface PrimaryGstr1AggregationMetrics {
   PRIMARY_ONTIME_RETURN_COUNT: number;
 }
 
+export interface SecondaryGstr1AggregationMetrics {
+  CONSIDERED_TOTAL_RETURN_PERIODS: number;
+  CONSIDERED_FILED_RETURN_COUNT: number;
+  CONSIDERED_NON_FILED_RETURN_COUNT: number;
+  CONSIDERED_DELAYED_RETURN_COUNT: number;
+  CONSIDERED_ONTIME_RETURN_COUNT: number;
+}
+
 export interface Gstr1ReturnPeriodRow {
   returnPeriod: string;
   filingStatus: string;
@@ -61,6 +69,15 @@ export const PRIMARY_GSTR1_METRIC_KEYS = [
   'PRIMARY_NON_FILED_RETURN_COUNT',
   'PRIMARY_DELAYED_RETURN_COUNT',
   'PRIMARY_ONTIME_RETURN_COUNT',
+] as const;
+
+/** Keys written by GSTR-1 considered-entity aggregation. */
+export const CONSIDERED_GSTR1_METRIC_KEYS = [
+  'CONSIDERED_TOTAL_RETURN_PERIODS',
+  'CONSIDERED_FILED_RETURN_COUNT',
+  'CONSIDERED_NON_FILED_RETURN_COUNT',
+  'CONSIDERED_DELAYED_RETURN_COUNT',
+  'CONSIDERED_ONTIME_RETURN_COUNT',
 ] as const;
 
 export function normalizePan(
@@ -228,6 +245,38 @@ export function extractGstr1ReturnPeriodRows(
 export function computePrimaryGstr1AggregationMetrics(
   records: Array<Record<string, any>>,
 ): PrimaryGstr1AggregationMetrics {
+  const counts = computeGstr1AggregationMetricCounts(records);
+  return {
+    PRIMARY_TOTAL_RETURN_PERIODS: counts.totalReturnPeriods,
+    PRIMARY_FILED_RETURN_COUNT: counts.filedReturnCount,
+    PRIMARY_NON_FILED_RETURN_COUNT: counts.nonFiledReturnCount,
+    PRIMARY_DELAYED_RETURN_COUNT: counts.delayedReturnCount,
+    PRIMARY_ONTIME_RETURN_COUNT: counts.ontimeReturnCount,
+  };
+}
+
+export function computeSecondaryGstr1AggregationMetrics(
+  records: Array<Record<string, any>>,
+): SecondaryGstr1AggregationMetrics {
+  const counts = computeGstr1AggregationMetricCounts(records);
+  return {
+    CONSIDERED_TOTAL_RETURN_PERIODS: counts.totalReturnPeriods,
+    CONSIDERED_FILED_RETURN_COUNT: counts.filedReturnCount,
+    CONSIDERED_NON_FILED_RETURN_COUNT: counts.nonFiledReturnCount,
+    CONSIDERED_DELAYED_RETURN_COUNT: counts.delayedReturnCount,
+    CONSIDERED_ONTIME_RETURN_COUNT: counts.ontimeReturnCount,
+  };
+}
+
+function computeGstr1AggregationMetricCounts(
+  records: Array<Record<string, any>>,
+): {
+  totalReturnPeriods: number;
+  filedReturnCount: number;
+  nonFiledReturnCount: number;
+  delayedReturnCount: number;
+  ontimeReturnCount: number;
+} {
   const allReturnPeriods = new Set<string>();
   const filedReturnPeriods = new Set<string>();
   const nonFiledReturnPeriods = new Set<string>();
@@ -253,11 +302,11 @@ export function computePrimaryGstr1AggregationMetrics(
   }
 
   return {
-    PRIMARY_TOTAL_RETURN_PERIODS: allReturnPeriods.size,
-    PRIMARY_FILED_RETURN_COUNT: filedReturnPeriods.size,
-    PRIMARY_NON_FILED_RETURN_COUNT: nonFiledReturnPeriods.size,
-    PRIMARY_DELAYED_RETURN_COUNT: delayedReturnPeriods.size,
-    PRIMARY_ONTIME_RETURN_COUNT: ontimeReturnPeriods.size,
+    totalReturnPeriods: allReturnPeriods.size,
+    filedReturnCount: filedReturnPeriods.size,
+    nonFiledReturnCount: nonFiledReturnPeriods.size,
+    delayedReturnCount: delayedReturnPeriods.size,
+    ontimeReturnCount: ontimeReturnPeriods.size,
   };
 }
 

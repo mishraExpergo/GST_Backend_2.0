@@ -26,6 +26,7 @@ type GstEntityType = 'PRIMARY' | 'CONSIDERED_ENTITY';
 interface SourceRow {
   loan_id: string;
   customer_id: string | null;
+  username: string | null;
   gst_no: string | null;
   pan: string | null;
   entity_type: GstEntityType;
@@ -422,7 +423,10 @@ export class GstComplianceService {
       return;
     }
 
-    const username = usernameFromJob || gstin;
+    const username =
+      String(usernameFromJob ?? '').trim() ||
+      String(row.username ?? '').trim() ||
+      gstin;
     try {
       let response: Record<string, any>;
       const tracking = {
@@ -650,12 +654,13 @@ export class GstComplianceService {
     const dbRows: Array<{
       customer_id: string | null;
       associated_loan_id: string | null;
+      username: string | null;
       primary_pan: string | null;
       primary_gst_no: string | null;
       considered_entity_pan: string | null;
       considered_entity_gst_no: string | null;
     }> = await this.dataSource.query(
-      `SELECT customer_id, associated_loan_id, primary_pan, primary_gst_no,
+      `SELECT customer_id, associated_loan_id, username, primary_pan, primary_gst_no,
               considered_entity_pan, considered_entity_gst_no
          FROM "${tableName}"`,
     );
@@ -669,6 +674,7 @@ export class GstComplianceService {
         rows.push({
           loan_id: loanId,
           customer_id: customerId,
+          username: r.username ?? null,
           gst_no: r.primary_gst_no,
           pan: r.primary_pan ?? null,
           entity_type: 'PRIMARY',
@@ -679,6 +685,7 @@ export class GstComplianceService {
         rows.push({
           loan_id: loanId,
           customer_id: customerId,
+          username: r.username ?? null,
           gst_no: r.considered_entity_gst_no,
           pan: r.considered_entity_pan ?? null,
           entity_type: 'CONSIDERED_ENTITY',
