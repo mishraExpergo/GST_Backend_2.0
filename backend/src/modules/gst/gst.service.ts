@@ -38,6 +38,7 @@ export interface GstrStatusCounts {
 }
 
 export interface CustomerGstrStatusSummary {
+  GSTREG1: GstrStatusCounts;
   GSTR1: GstrStatusCounts;
   GSTR2B: GstrStatusCounts;
   GSTR3B: GstrStatusCounts;
@@ -225,15 +226,24 @@ export class GstService {
         ? 'created_at'
         : 'id';
 
-    const customerGstins = await this.dataSource.query<
-      { customer_id: string; gst_number: string }[]
+    const uploadedUnits = await this.dataSource.query<
+      { customer_id: string; loan_id: string; gst_number: string }[]
     >(
       `SELECT DISTINCT
        TRIM(customer_id) AS customer_id,
+       TRIM(associated_loan_id) AS loan_id,
        UPPER(TRIM(gst_number)) AS gst_number
-     FROM public.api_request_logs
+     FROM (
+       SELECT customer_id, associated_loan_id, primary_gst_no AS gst_number
+       FROM public."${GST_UPLOAD_TABLE}"
+       UNION
+       SELECT customer_id, associated_loan_id, considered_entity_gst_no AS gst_number
+       FROM public."${GST_UPLOAD_TABLE}"
+     ) uploaded
      WHERE customer_id IS NOT NULL
        AND TRIM(customer_id) <> ''
+       AND associated_loan_id IS NOT NULL
+       AND TRIM(associated_loan_id) <> ''
        AND gst_number IS NOT NULL
        AND TRIM(gst_number) <> ''`,
     );
@@ -241,6 +251,7 @@ export class GstService {
     const latestLogs = await this.dataSource.query<
       {
         customer_id: string;
+        loan_id: string;
         gst_number: string;
         gstr_type: string;
         status: string;
@@ -248,30 +259,38 @@ export class GstService {
     >(
       `SELECT DISTINCT ON (
        TRIM(customer_id),
+       TRIM(associated_loan_id),
        UPPER(TRIM(gst_number)),
-       gstr_type
+       UPPER(TRIM(gstr_type))
      )
        TRIM(customer_id) AS customer_id,
+       TRIM(associated_loan_id) AS loan_id,
        UPPER(TRIM(gst_number)) AS gst_number,
-       gstr_type,
+       UPPER(TRIM(gstr_type)) AS gstr_type,
        UPPER(TRIM(status)) AS status
      FROM public.api_request_logs
      WHERE customer_id IS NOT NULL
        AND TRIM(customer_id) <> ''
+       AND associated_loan_id IS NOT NULL
+       AND TRIM(associated_loan_id) <> ''
        AND gst_number IS NOT NULL
        AND TRIM(gst_number) <> ''
-       AND gstr_type IN ('GSTR-1', 'GSTR-2B', 'GSTR-3B')
+       AND UPPER(TRIM(gstr_type)) IN ('GSTR-1', 'GSTR-2B', 'GSTR-3B', 'GSTREG-1', 'GSTREG1')
      ORDER BY
        TRIM(customer_id),
+       TRIM(associated_loan_id),
        UPPER(TRIM(gst_number)),
-       gstr_type,
-       "${timestampColumn}" DESC NULLS LAST`,
+       UPPER(TRIM(gstr_type)),
+       "${timestampColumn}" DESC NULLS LAST,
+       id DESC`,
     );
 
     const gstrTypeMap: Record<string, keyof CustomerGstrStatusSummary> = {
       'GSTR-1': 'GSTR1',
       'GSTR-2B': 'GSTR2B',
       'GSTR-3B': 'GSTR3B',
+      'GSTREG-1': 'GSTREG1',
+      'GSTREG1': 'GSTREG1',
     };
 
     const createEmptyCounts = (): GstrStatusCounts => ({
@@ -281,38 +300,45 @@ export class GstService {
     });
 
     const createEmptySummary = (): CustomerGstrStatusSummary => ({
+      GSTREG1: createEmptyCounts(),
       GSTR1: createEmptyCounts(),
       GSTR2B: createEmptyCounts(),
       GSTR3B: createEmptyCounts(),
     });
 
-    const gstinsByCustomer = new Map<string, Set<string>>();
-    for (const row of customerGstins ?? []) {
-      if (!gstinsByCustomer.has(row.customer_id)) {
-        gstinsByCustomer.set(row.customer_id, new Set());
+    const unitsByCustomer = new Map<
+      string,
+      Array<{ loanId: string; gstNumber: string }>
+    >();
+    for (const row of uploadedUnits ?? []) {
+      if (!unitsByCustomer.has(row.customer_id)) {
+        unitsByCustomer.set(row.customer_id, []);
       }
-      gstinsByCustomer.get(row.customer_id)!.add(row.gst_number);
+      unitsByCustomer.get(row.customer_id)!.push({
+        loanId: row.loan_id,
+        gstNumber: row.gst_number,
+      });
     }
 
-    const statusByCustomerGstinType = new Map<string, string>();
+    const statusByCustomerLoanGstinType = new Map<string, string>();
     for (const row of latestLogs ?? []) {
       const summaryKey = gstrTypeMap[row.gstr_type];
       if (!summaryKey) continue;
-      statusByCustomerGstinType.set(
-        `${row.customer_id}|${row.gst_number}|${summaryKey}`,
+      statusByCustomerLoanGstinType.set(
+        `${row.customer_id}|${row.loan_id}|${row.gst_number}|${summaryKey}`,
         row.status,
       );
     }
 
     const result: Record<string, CustomerGstrStatusSummary> = {};
 
-    for (const [customerId, gstins] of gstinsByCustomer) {
+    for (const [customerId, units] of unitsByCustomer) {
       const summary = createEmptySummary();
 
-      for (const gstrKey of ['GSTR1', 'GSTR2B', 'GSTR3B'] as const) {
-        for (const gstNumber of gstins) {
-          const status = statusByCustomerGstinType.get(
-            `${customerId}|${gstNumber}|${gstrKey}`,
+      for (const gstrKey of ['GSTREG1', 'GSTR1', 'GSTR2B', 'GSTR3B'] as const) {
+        for (const unit of units) {
+          const status = statusByCustomerLoanGstinType.get(
+            `${customerId}|${unit.loanId}|${unit.gstNumber}|${gstrKey}`,
           );
 
           if (!status) {

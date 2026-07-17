@@ -75,8 +75,9 @@ export class GstController {
 
   /**
    * GET /gst/customer-gstr-status-counts
-   * Returns per customer_id counts of updated, pending, and failed for
-   * GSTR1, GSTR2B, and GSTR3B based on api_request_logs.
+   * Uses customer/loan/GSTIN units from gst_uploaded_file_data and returns
+   * per-customer updated, pending, and failed counts from their latest
+   * matching API logs for GSTREG1, GSTR1, GSTR2B, and GSTR3B.
    */
   @Get('customer-gstr-status-counts')
   async getCustomerGstrStatusCounts() {
