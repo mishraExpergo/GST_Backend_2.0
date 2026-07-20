@@ -337,9 +337,7 @@ export class GstTaxpayerAuthService implements OnModuleInit, OnModuleDestroy {
     );
 
     if (!colSet.has('username')) {
-      throw new BadRequestException(
-        `Column "username" not found in "${tableName}". Upload data must include a username column.`,
-      );
+      return gstin;
     }
 
     const gstColumns = [

@@ -510,6 +510,38 @@ export class GstReturnPersistenceService {
     return existing !== null;
   }
 
+  /**
+   * True if Mongo has at least one document for this loan + GSTIN
+   * (any year/month). Used by the aggregation scheduler completeness check.
+   */
+  async hasAnyDataForGstin(
+    returnType: GstReturnType,
+    loanId: string,
+    gstin: string,
+  ): Promise<boolean> {
+    this.assertMongoEnabled();
+    const normalizedGstin = gstin.trim().toUpperCase();
+
+    if (returnType === 'GSTR-1') {
+      const count = await this.gstr1Model!
+        .countDocuments({ loanId, gstin: normalizedGstin })
+        .exec();
+      return count > 0;
+    }
+
+    if (returnType === 'GSTR-2B') {
+      const count = await this.gstr2bModel!
+        .countDocuments({ loanId, gstin: normalizedGstin })
+        .exec();
+      return count > 0;
+    }
+
+    const count = await this.gstr3bModel!
+      .countDocuments({ loanId, gstin: normalizedGstin })
+      .exec();
+    return count > 0;
+  }
+
   async isGstinYearComplete(
     returnType: GstReturnType,
     loanId: string,

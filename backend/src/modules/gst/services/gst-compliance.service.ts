@@ -651,30 +651,40 @@ export class GstComplianceService {
   }
 
   private async fetchSourceRows(tableName: string): Promise<SourceRow[]> {
+    const hasUsername = await this.tableHasColumn(tableName, 'username');
+    const selectColumns = [
+      'customer_id',
+      'associated_loan_id',
+      ...(hasUsername ? ['username'] : []),
+      'primary_pan',
+      'primary_gst_no',
+      'considered_entity_pan',
+      'considered_entity_gst_no',
+    ].join(', ');
+
     const dbRows: Array<{
       customer_id: string | null;
       associated_loan_id: string | null;
-      username: string | null;
+      username?: string | null;
       primary_pan: string | null;
       primary_gst_no: string | null;
       considered_entity_pan: string | null;
       considered_entity_gst_no: string | null;
     }> = await this.dataSource.query(
-      `SELECT customer_id, associated_loan_id, username, primary_pan, primary_gst_no,
-              considered_entity_pan, considered_entity_gst_no
-         FROM "${tableName}"`,
+      `SELECT ${selectColumns} FROM "${tableName}"`,
     );
 
     const rows: SourceRow[] = [];
     for (const r of dbRows) {
       const loanId = (r.associated_loan_id ?? '').trim();
       const customerId = r.customer_id ?? null;
+      const rowUsername = hasUsername ? (r.username ?? null) : null;
 
       if ((r.primary_gst_no ?? '').trim()) {
         rows.push({
           loan_id: loanId,
           customer_id: customerId,
-          username: r.username ?? null,
+          username: rowUsername,
           gst_no: r.primary_gst_no,
           pan: r.primary_pan ?? null,
           entity_type: 'PRIMARY',
@@ -685,7 +695,7 @@ export class GstComplianceService {
         rows.push({
           loan_id: loanId,
           customer_id: customerId,
-          username: r.username ?? null,
+          username: rowUsername,
           gst_no: r.considered_entity_gst_no,
           pan: r.considered_entity_pan ?? null,
           entity_type: 'CONSIDERED_ENTITY',
@@ -694,6 +704,23 @@ export class GstComplianceService {
     }
 
     return rows;
+  }
+
+  private async tableHasColumn(
+    tableName: string,
+    columnName: string,
+  ): Promise<boolean> {
+    const columns: Array<{ column_name: string }> = await this.dataSource.query(
+      `SELECT column_name
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = $1`,
+      [tableName],
+    );
+    const normalized = columnName.toLowerCase();
+    return columns.some(
+      (column) => String(column.column_name ?? '').toLowerCase() === normalized,
+    );
   }
 
   private async partitionUnprocessedRows(

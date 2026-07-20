@@ -597,23 +597,18 @@ export class GstController {
 
   /**
    * POST /gst/scheduler/aggregate-returns
-   * Checks Mongo GSTR-1 / 2B / 3B collections per customer+loan and runs
-   * aggregation when every expected GSTIN (primary + considered entity) for that loan is present.
-   * GSTR-1 metrics go to primary_gst_aggregation (PRIMARY_*) and secondary_gst_aggregation (CONSIDERED_*).
+   * Runs aggregation when every expected GSTIN for a customer+loan has at least
+   * one Mongo document (any year/month). No year/month required.
    *
-   * body:
-   *   - year (required)
-   *   - month (optional; omit to require all 12 months for the year)
+   * body (all optional):
    *   - returnType: GSTR-1 | GSTR-2B | GSTR-3B | ALL (default ALL)
-   *   - customerId (optional filter)
-   *   - loanId (optional filter)
-   *   - tableName (optional, default gst_uploaded_file_data)
+   *   - customerId
+   *   - loanId
+   *   - tableName (default gst_uploaded_file_data)
    */
   @Post('scheduler/aggregate-returns')
   @HttpCode(HttpStatus.OK)
   async runReturnAggregationScheduler(
-    @Body('year') year: number,
-    @Body('month') month?: number,
     @Body('returnType') returnType?: 'GSTR-1' | 'GSTR-2B' | 'GSTR-3B' | 'ALL',
     @Body('customerId') customerId?: string,
     @Body('loanId') loanId?: string,
@@ -625,13 +620,6 @@ export class GstController {
       );
     }
 
-    const yearNum = Number(year);
-    if (!Number.isInteger(yearNum) || yearNum < 2017 || yearNum > 2100) {
-      throw new BadRequestException(
-        `Invalid "year" "${year}". Expected a 4-digit year (e.g. 2024).`,
-      );
-    }
-
     const normalizedReturnType = returnType ?? 'ALL';
     const allowedReturnTypes = new Set(['GSTR-1', 'GSTR-2B', 'GSTR-3B', 'ALL']);
     if (!allowedReturnTypes.has(normalizedReturnType)) {
@@ -640,20 +628,8 @@ export class GstController {
       );
     }
 
-    let monthNum: number | undefined;
-    if (month !== undefined && month !== null && String(month).trim() !== '') {
-      monthNum = Number(month);
-      if (!Number.isInteger(monthNum) || monthNum < 1 || monthNum > 12) {
-        throw new BadRequestException(
-          `Invalid "month" "${month}". Expected a number between 1 and 12.`,
-        );
-      }
-    }
-
     const data = await this.returnAggregationScheduler.run({
       returnType: normalizedReturnType,
-      year: yearNum,
-      month: monthNum,
       customerId,
       loanId,
       tableName,
