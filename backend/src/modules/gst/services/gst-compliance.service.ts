@@ -32,7 +32,7 @@ interface SourceRow {
   entity_type: GstEntityType;
 }
 
-type GstrReturnType = 'GSTR-1' | 'GSTR-1A' | 'GSTR-2B' | 'GSTR-3B';
+type GstrReturnType = 'GSTR-2B' | 'GSTR-3B';
 
 interface BatchResult {
   totalRows: number;
@@ -48,10 +48,6 @@ const DEFAULT_SOURCE_TABLE = 'gst_uploaded_file_data';
 const GSTIN_PATTERN =
   /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
 const VERIFY_FETCH_OPERATION = 'GSTIN_VERIFY_AND_FETCH';
-/* DISABLED: GSTR-1 / GSTR-1A
-const VERIFY_GSTR_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR';
-const VERIFY_1A_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_1A';
-*/
 const VERIFY_2B_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_2B';
 const VERIFY_3B_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_3B';
 
@@ -117,48 +113,6 @@ export class GstComplianceService {
     return job;
   }
 
-  async startGstr1VerifyAndFetch(
-    _year: number,
-    _month: number,
-    _rawTableName?: string,
-    _username?: string,
-  ): Promise<Job> {
-    /* DISABLED: GSTR-1
-    return this.startReturnVerifyAndFetch(
-      'GSTR-1',
-      VERIFY_GSTR_OPERATION,
-      year,
-      month,
-      rawTableName,
-      username,
-    );
-    */
-    throw new ServiceUnavailableException(
-      'GSTR-1 / GSTR-1A temporarily disabled.',
-    );
-  }
-
-  async startGstr1aVerifyAndFetch(
-    _year: number,
-    _month: number,
-    _rawTableName?: string,
-    _username?: string,
-  ): Promise<Job> {
-    /* DISABLED: GSTR-1A
-    return this.startReturnVerifyAndFetch(
-      'GSTR-1A',
-      VERIFY_1A_OPERATION,
-      year,
-      month,
-      rawTableName,
-      username,
-    );
-    */
-    throw new ServiceUnavailableException(
-      'GSTR-1 / GSTR-1A temporarily disabled.',
-    );
-  }
-
   async startGstr2bVerifyAndFetch(
     year: number,
     month: number,
@@ -201,7 +155,7 @@ export class GstComplianceService {
     _rawTableName?: string,
   ): Promise<Job> {
     throw new ServiceUnavailableException(
-      'GSTR track verify-and-fetch is not configured in this deployment build. Use verify-and-fetch / GSTR-1/2B/3B endpoints.',
+      'GSTR track verify-and-fetch is not configured in this deployment build. Use verify-and-fetch / GSTR-2B/3B endpoints.',
     );
   }
 
@@ -437,21 +391,7 @@ export class GstComplianceService {
         skipAutoAggregationTrigger: true,
       };
 
-      if (returnType === 'GSTR-1' || returnType === 'GSTR-1A') {
-        /* DISABLED: GSTR-1 / GSTR-1A fetch branches
-        if (returnType === 'GSTR-1') {
-          response = await this.gstTaxpayerReturnsService.fetchGstr1(...);
-        } else if (returnType === 'GSTR-1A') {
-          response = await this.gstTaxpayerReturnsService.fetchGstr1a(...);
-        }
-        */
-        result.failed++;
-        this.logger.warn(
-          `Skipping disabled ${returnType} for loanId=${row.loan_id} gstin=${gstin}`,
-        );
-        await this.markRowStatus(tableName, row.loan_id, 'FAILED');
-        return;
-      } else if (returnType === 'GSTR-2B') {
+      if (returnType === 'GSTR-2B') {
         response = await this.gstTaxpayerReturnsService.fetchGstr2b(
           { username, gstin },
           year,
@@ -508,13 +448,8 @@ export class GstComplianceService {
         'FETCHED',
     );
 
-    /* DISABLED: GSTR-1 Mongo persist
-    if (returnType === 'GSTR-1') {
-      return;
-    }
-    */
-
     if (returnType === 'GSTR-2B' && this.gstr2bComplianceModel) {
+
       await this.gstr2bComplianceModel.updateOne(
         { loanId: row.loan_id, gstin, year, month },
         {
@@ -569,12 +504,6 @@ export class GstComplianceService {
       );
       return;
     }
-
-    /* DISABLED: GSTR-1A Mongo persist
-    if (returnType === 'GSTR-1A') {
-      // nothing persisted
-    }
-    */
   }
 
   private async finalizeJob(jobId: string): Promise<void> {
@@ -613,12 +542,6 @@ export class GstComplianceService {
         await this.gstAggregationService.triggerAfterVerifyFetchJob(jobId);
         return;
       }
-      /* DISABLED: GSTR-1 aggregation trigger
-      if (operation === VERIFY_GSTR_OPERATION) {
-        await this.gstAggregationService.triggerAfterGstrJob(jobId);
-        return;
-      }
-      */
       if (operation === VERIFY_2B_OPERATION) {
         await this.gstAggregationService.triggerAfterGstr2bJob(jobId);
         return;

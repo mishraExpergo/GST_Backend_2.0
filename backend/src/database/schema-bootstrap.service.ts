@@ -14,7 +14,9 @@ export class SchemaBootstrapService implements OnModuleInit {
   async onModuleInit(): Promise<void> {
     try {
       await this.ensureCoreTables();
-      this.logger.log('Postgres core schema verified (jobs, aggregation).');
+      this.logger.log(
+        'Postgres core schema verified (jobs, aggregation, api_request_logs).',
+      );
     } catch (err) {
       this.logger.error(
         `Schema bootstrap failed: ${
@@ -87,6 +89,26 @@ export class SchemaBootstrapService implements OnModuleInit {
         customer_id text NULL,
         associated_loan_id text NULL,
         aggregation_variable text NULL
+      )
+    `);
+
+    await this.dataSource.query(`
+      CREATE TABLE IF NOT EXISTS api_request_logs (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        gstr_family text NOT NULL,
+        gstr_type text NOT NULL,
+        api_name text NOT NULL,
+        retry_count int NOT NULL DEFAULT 0,
+        status character varying(32) NOT NULL DEFAULT 'PROCESSING',
+        associated_loan_id text NULL,
+        customer_id text NULL,
+        gst_number text NULL,
+        data_source text NULL,
+        response_status_code int NULL,
+        error_message text NULL,
+        metadata jsonb NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
       )
     `);
   }

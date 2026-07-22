@@ -6,7 +6,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 
-export type ApiRequestStatus = 'PROCESSING' | 'SUCCESS' | 'FAILED';
+export type ApiRequestStatus = 'PENDING' | 'SUCCESS' | 'FAILED';
 
 @Entity('api_request_logs')
 export class ApiRequestLog {
@@ -25,7 +25,7 @@ export class ApiRequestLog {
   @Column({ name: 'retry_count', type: 'int', default: 0 })
   retryCount: number;
 
-  @Column({ type: 'varchar', length: 32, default: 'PROCESSING' })
+  @Column({ type: 'varchar', length: 32, default: 'PENDING' })
   status: ApiRequestStatus;
 
   @Column({ name: 'associated_loan_id', type: 'text', nullable: true })

@@ -3,7 +3,6 @@
   BadRequestException,
   Injectable,
   Logger,
-  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -39,16 +38,6 @@ export class GstTaxpayerReturnsService {
     private readonly returnPersistenceService: GstReturnPersistenceService,
   ) {}
 
-  async fetchGstr1ForYear(
-    _identity: TaxpayerIdentity,
-    _year: number,
-    _tracking: RequestTrackingContext = {},
-  ): Promise<Record<string, any>> {
-    throw new ServiceUnavailableException(
-      'GSTR-1 / GSTR-1A temporarily disabled.',
-    );
-  }
-
   async fetchGstr2bForYear(
     identity: TaxpayerIdentity,
     year: number,
@@ -76,32 +65,6 @@ export class GstTaxpayerReturnsService {
       'GSTR-3B',
       year,
       tracking,
-    );
-  }
-
-  async fetchGstr1(
-    _identity: TaxpayerIdentity,
-    _year: number,
-    _month: number,
-    _tracking: RequestTrackingContext = {},
-  ): Promise<Record<string, any>> {
-    /* DISABLED: GSTR-1
-    const { normalizedIdentity, yearNum, monthNum } = this.validateInputs(
-      identity,
-      year,
-      month,
-    );
-    return this.fetchReturn(
-      normalizedIdentity,
-      `/gst/compliance/tax-payer/gstrs/gstr-1/${yearNum}/${monthNum}`,
-      'GSTR-1',
-      yearNum,
-      monthNum,
-      tracking,
-    );
-    */
-    throw new ServiceUnavailableException(
-      'GSTR-1 / GSTR-1A temporarily disabled.',
     );
   }
 
@@ -148,32 +111,6 @@ export class GstTaxpayerReturnsService {
       yearNum,
       monthNum,
       tracking,
-    );
-  }
-
-  async fetchGstr1a(
-    _identity: TaxpayerIdentity,
-    _year: number,
-    _month: number,
-    _tracking: RequestTrackingContext = {},
-  ): Promise<Record<string, any>> {
-    /* DISABLED: GSTR-1A
-    const { normalizedIdentity, yearNum, monthNum } = this.validateInputs(
-      identity,
-      year,
-      month,
-    );
-    return this.fetchReturn(
-      normalizedIdentity,
-      `/gst/compliance/tax-payer/gstrs/gstr-1a/${yearNum}/${monthNum}`,
-      'GSTR-1A',
-      yearNum,
-      monthNum,
-      tracking,
-    );
-    */
-    throw new ServiceUnavailableException(
-      'GSTR-1 / GSTR-1A temporarily disabled.',
     );
   }
 
@@ -433,44 +370,33 @@ export class GstTaxpayerReturnsService {
   private async fetchReturn(
     identity: TaxpayerIdentity,
     path: string,
-    returnType: 'GSTR-1' | 'GSTR-1A' | 'GSTR-2B' | 'GSTR-3B',
+    returnType: 'GSTR-2B' | 'GSTR-3B',
     year: number,
     month: number,
     tracking: RequestTrackingContext,
   ): Promise<Record<string, any>> {
-    const isPersistedReturn =
-      returnType === 'GSTR-1' ||
-      returnType === 'GSTR-2B' ||
-      returnType === 'GSTR-3B';
+    this.returnPersistenceService.assertMongoEnabled();
+    const persistenceContext =
+      this.returnPersistenceService.validatePersistenceContext(tracking);
 
-    let persistenceContext:
-      | { customerId: string; associatedLoanId: string }
-      | null = null;
-
-    if (isPersistedReturn) {
-      this.returnPersistenceService.assertMongoEnabled();
-      persistenceContext =
-        this.returnPersistenceService.validatePersistenceContext(tracking);
-
-      const cached = await this.returnPersistenceService.findExisting(
-        returnType,
-        persistenceContext.associatedLoanId,
-        identity.gstin,
+    const cached = await this.returnPersistenceService.findExisting(
+      returnType,
+      persistenceContext.associatedLoanId,
+      identity.gstin,
+      year,
+      month,
+    );
+    if (cached) {
+      return {
+        message: `${returnType} served from MongoDB (already fetched for this GSTIN).`,
+        username: identity.username,
+        gstin: identity.gstin,
         year,
         month,
-      );
-      if (cached) {
-        return {
-          message: `${returnType} served from MongoDB (already fetched for this GSTIN).`,
-          username: identity.username,
-          gstin: identity.gstin,
-          year,
-          month,
-          fromCache: true,
-          stored: false,
-          data: cached,
-        };
-      }
+        fromCache: true,
+        stored: false,
+        data: cached,
+      };
     }
 
     const maxRetries = Number(this.config.get('GST_API_MAX_RETRIES', '3'));
@@ -485,20 +411,16 @@ export class GstTaxpayerReturnsService {
       String(tracking.associatedLoanId ?? '').trim() ||
       `${identity.username}:${identity.gstin}`;
     const customerId = String(tracking.customerId ?? '').trim() || identity.username;
-    // GSTR-1 / GSTR-1A are not tracked in api_request_logs.
-    const log =
-      returnType === 'GSTR-1' || returnType === 'GSTR-1A'
-        ? null
-        : await this.apiRequestLogService.createProcessingLog({
-            gstrFamily: 'GSTR',
-            gstrType: returnType,
-            apiName: path,
-            associatedLoanId,
-            customerId,
-            gstNumber: identity.gstin,
-            dataSource: tracking.dataSource ?? 'sandbox',
-            metadata: { username: identity.username, year, month },
-          });
+    const log = await this.apiRequestLogService.createProcessingLog({
+      gstrFamily: 'GSTR',
+      gstrType: returnType,
+      apiName: path,
+      associatedLoanId,
+      customerId,
+      gstNumber: identity.gstin,
+      dataSource: tracking.dataSource ?? 'sandbox',
+      metadata: { username: identity.username, year, month },
+    });
 
     while (true) {
       const url = `${this.baseUrl}${path}`;
@@ -591,22 +513,20 @@ export class GstTaxpayerReturnsService {
       }
 
       let storageResult: { stored: boolean; reason: string } | null = null;
-      if (isPersistedReturn && persistenceContext) {
-        storageResult = await this.returnPersistenceService.storeIfAbsent(
-          returnType,
-          {
-            customerId: persistenceContext.customerId,
-            associatedLoanId: persistenceContext.associatedLoanId,
-            gstin: identity.gstin,
-            username: identity.username ?? '',
-            dataSource: tracking.dataSource,
-            sourceTable: tracking.sourceTable,
-          },
-          year,
-          month,
-          response.data ?? {},
-        );
-      }
+      storageResult = await this.returnPersistenceService.storeIfAbsent(
+        returnType,
+        {
+          customerId: persistenceContext.customerId,
+          associatedLoanId: persistenceContext.associatedLoanId,
+          gstin: identity.gstin,
+          username: identity.username ?? '',
+          dataSource: tracking.dataSource,
+          sourceTable: tracking.sourceTable,
+        },
+        year,
+        month,
+        response.data ?? {},
+      );
 
       return {
         message: `${returnType} fetched successfully.`,
@@ -624,7 +544,7 @@ export class GstTaxpayerReturnsService {
 
   private async fetchReturnForYear(
     identity: TaxpayerIdentity,
-    returnType: 'GSTR-1' | 'GSTR-2B' | 'GSTR-3B',
+    returnType: 'GSTR-2B' | 'GSTR-3B',
     year: number,
     tracking: RequestTrackingContext,
   ): Promise<Record<string, any>> {
@@ -735,16 +655,11 @@ export class GstTaxpayerReturnsService {
   }
 
   private buildReturnPath(
-    returnType: 'GSTR-1' | 'GSTR-2B' | 'GSTR-3B',
+    returnType: 'GSTR-2B' | 'GSTR-3B',
     year: number,
     month: number,
   ): string {
-    const slug =
-      returnType === 'GSTR-1'
-        ? 'gstr-1'
-        : returnType === 'GSTR-2B'
-          ? 'gstr-2b'
-          : 'gstr-3b';
+    const slug = returnType === 'GSTR-2B' ? 'gstr-2b' : 'gstr-3b';
     return `/gst/compliance/tax-payer/gstrs/${slug}/${year}/${month}`;
   }
 

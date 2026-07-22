@@ -44,6 +44,7 @@ export interface ApiLogQuery {
 export class ApiRequestLogService implements OnModuleInit {
   private readonly logger = new Logger(ApiRequestLogService.name);
 
+  
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
     @InjectRepository(ApiRequestLog)
@@ -91,7 +92,7 @@ export class ApiRequestLogService implements OnModuleInit {
 
     if (existing) {
       existing.retryCount = (existing.retryCount ?? 0) + 1;
-      existing.status = 'PROCESSING';
+      existing.status = 'PENDING';
       existing.responseStatusCode = null;
       existing.errorMessage = null;
       existing.gstrFamily = context.gstrFamily;
@@ -108,7 +109,7 @@ export class ApiRequestLogService implements OnModuleInit {
       gstrType: context.gstrType,
       apiName: context.apiName,
       retryCount: 0,
-      status: 'PROCESSING',
+      status: 'PENDING',
       associatedLoanId: normalizedAssociatedLoanId,
       customerId: normalizedCustomerId,
       gstNumber: normalizedGstNumber,
@@ -252,6 +253,7 @@ export class ApiRequestLogService implements OnModuleInit {
     if (
       financialYear !== undefined &&
       financialYear !== null &&
+
       String(financialYear).trim() !== ''
     ) {
       qb.andWhere(`log.metadata->>'financialYear' = :financialYear`, {
@@ -280,6 +282,7 @@ export class ApiRequestLogService implements OnModuleInit {
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
         gstr_family text NOT NULL,
         gstr_type text NOT NULL,
+        
         api_name text NOT NULL,
         retry_count int NOT NULL DEFAULT 0,
         status character varying(32) NOT NULL DEFAULT 'PROCESSING',

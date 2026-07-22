@@ -72,8 +72,18 @@ export class GstAggregationHistoryService {
       return [];
     }
 
-    const historyRows: Partial<PrimaryGstAggregationHistory>[] = [];
+    const rowsByLoan = new Map<string, Partial<PrimaryGstAggregation>>();
     for (const row of rows) {
+      const loanId = String(row.associatedLoanId ?? '').trim();
+      if (!loanId) {
+        continue;
+      }
+      rowsByLoan.set(loanId, row);
+    }
+    const dedupedRows = Array.from(rowsByLoan.values());
+
+    const historyRows: Partial<PrimaryGstAggregationHistory>[] = [];
+    for (const row of dedupedRows) {
       const loanId = String(row.associatedLoanId ?? '').trim();
       if (!loanId) {
         continue;
@@ -109,7 +119,7 @@ export class GstAggregationHistoryService {
       }
     }
 
-    const saved = await repo.save(rows);
+    const saved = await repo.save(dedupedRows);
     if (historyRows.length > 0) {
       await this.attachSavedPrimaryIds(historyRows, saved);
       await this.primaryHistoryRepo.save(historyRows);
@@ -131,8 +141,18 @@ export class GstAggregationHistoryService {
       return [];
     }
 
-    const historyRows: Partial<SecondaryGstAggregationHistory>[] = [];
+    const rowsByLoan = new Map<string, Partial<SecondaryGstAggregation>>();
     for (const row of rows) {
+      const loanId = String(row.associatedLoanId ?? '').trim();
+      if (!loanId) {
+        continue;
+      }
+      rowsByLoan.set(loanId, row);
+    }
+    const dedupedRows = Array.from(rowsByLoan.values());
+
+    const historyRows: Partial<SecondaryGstAggregationHistory>[] = [];
+    for (const row of dedupedRows) {
       const loanId = String(row.associatedLoanId ?? '').trim();
       if (!loanId) {
         continue;
@@ -168,7 +188,7 @@ export class GstAggregationHistoryService {
       }
     }
 
-    const saved = await repo.save(rows);
+    const saved = await repo.save(dedupedRows);
     if (historyRows.length > 0) {
       await this.attachSavedSecondaryIds(historyRows, saved);
       await this.secondaryHistoryRepo.save(historyRows);

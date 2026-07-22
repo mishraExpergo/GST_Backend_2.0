@@ -3,11 +3,7 @@ export interface MonthYear {
   month: number;
 }
 
-export type ReturnCoverageSource =
-  | 'GSTR-1'
-  | 'GSTR-2B'
-  | 'GSTR-3B'
-  | 'GSTR-1-RETURN-TRACK';
+export type ReturnCoverageSource = 'GSTR-2B' | 'GSTR-3B';
 
 /** Months 1..12 for past years, or 1..current month for the current calendar year. */
 export function getRequiredMonthsForYear(year: number, referenceDate = new Date()): number[] {
@@ -84,92 +80,6 @@ function addMonthYear(
     return;
   }
   target.add(parsed.month);
-}
-
-function extractEFiledList(payload: Record<string, any>): Array<Record<string, any>> {
-  const candidates = [
-    payload?.data?.data?.EFiledlist,
-    payload?.data?.EFiledlist,
-    payload?.EFiledlist,
-  ];
-  for (const candidate of candidates) {
-    if (Array.isArray(candidate)) {
-      return candidate;
-    }
-  }
-  return [];
-}
-
-function isGstr1ReturnType(raw: unknown): boolean {
-  const value = String(raw ?? '')
-    .trim()
-    .toUpperCase()
-    .replace(/-/g, '');
-  return !value || value === 'GSTR1';
-}
-
-/** GSTR-1 public track document (`gst_gstR1_returns_compliance_data`). */
-export function extractCoveredMonthsFromGstr1ReturnTrack(
-  doc: Record<string, any> | null | undefined,
-  year: number,
-): Set<number> {
-  const covered = new Set<number>();
-  if (!doc) {
-    return covered;
-  }
-
-  const payload = doc.gstrResponse ?? doc;
-  for (const entry of extractEFiledList(payload)) {
-    if (!isGstr1ReturnType(entry?.rtntype ?? entry?.returnType)) {
-      continue;
-    }
-
-    const fromReturnPeriod = parseMmYyyy(
-      entry?.ret_prd ?? entry?.returnPeriod ?? entry?.return_period,
-    );
-    if (fromReturnPeriod) {
-      addMonthYear(covered, fromReturnPeriod, year);
-      continue;
-    }
-
-    const fromDof = parseDdMmYyyy(entry?.dof ?? entry?.filedDate);
-    addMonthYear(covered, fromDof, year);
-  }
-
-  return covered;
-}
-
-/** GSTR-1 taxpayer monthly document (`gst_gstR1_complaince_data`). */
-export function extractCoveredMonthsFromGstr1Taxpayer(
-  doc: Record<string, any> | null | undefined,
-  year: number,
-): Set<number> {
-  const covered = new Set<number>();
-  if (!doc) {
-    return covered;
-  }
-
-  addMonthYear(covered, parseDocYearMonth(doc), year);
-
-  const payload = doc.gstrResponse ?? doc;
-  const nested = payload?.data?.data ?? payload?.data ?? payload;
-  const candidates = [
-    nested?.fp,
-    nested?.ret_period,
-    nested?.ret_prd,
-    nested?.returnPeriod,
-    nested?.return_period,
-    payload?.fp,
-    payload?.ret_period,
-    payload?.ret_prd,
-  ];
-
-  for (const candidate of candidates) {
-    addMonthYear(covered, parseMmYyyy(candidate), year);
-    addMonthYear(covered, parseDdMmYyyy(candidate), year);
-  }
-
-  return covered;
 }
 
 /**

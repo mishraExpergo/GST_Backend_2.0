@@ -1,3 +1,4 @@
+/// <reference types="multer" />
 import {
   BadRequestException,
   Body,
@@ -10,7 +11,6 @@ import {
   Param,
   Post,
   Query,
-  ServiceUnavailableException,
   UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
@@ -22,7 +22,10 @@ import { GstComplianceService } from './services/gst-compliance.service';
 import { GstTaxpayerAuthService } from './services/gst-taxpayer-auth.service';
 import { GstTaxpayerReturnsService } from './services/gst-taxpayer-returns.service';
 import { ApiRequestLogService } from './services/api-request-log.service';
-import { GstReturnAggregationSchedulerService } from './services/gst-return-aggregation-scheduler.service';
+import {
+  GstReturnAggregationSchedulerService,
+  type SchedulerReturnType,
+} from './services/gst-return-aggregation-scheduler.service';
 import { FileStorageService } from '../shared/services/file-storage.service';
 import type { ApiRequestStatus } from '../../entities/api-request-log.entity';
 
@@ -143,68 +146,6 @@ export class GstController {
       status: job.status,
       checkStatusUrl: `/gst/status/${job.id}`,
     };
-  }
-
-  /**
-   * POST /gst/verify-and-fetch/gstr-1
-   * DISABLED: GSTR-1 / GSTR-1A temporarily disabled.
-   */
-  @Post('verify-and-fetch/gstr-1')
-  @HttpCode(HttpStatus.SERVICE_UNAVAILABLE)
-  async verifyAndFetchGstr1(
-    @Body('year') _year?: number,
-    @Body('month') _month?: number,
-    @Body('tableName') _tableName?: string,
-    @Body('username') _username?: string,
-  ) {
-    /* DISABLED: GSTR-1
-    const job = await this.gstComplianceService.startGstr1VerifyAndFetch(
-      Number(year),
-      Number(month),
-      tableName,
-      username,
-    );
-    return {
-      message: 'GSTR-1 verify & fetch job accepted for background processing.',
-      jobId: job.id,
-      status: job.status,
-      checkStatusUrl: `/gst/status/${job.id}`,
-    };
-    */
-    throw new ServiceUnavailableException(
-      'GSTR-1 / GSTR-1A temporarily disabled.',
-    );
-  }
-
-  /**
-   * POST /gst/verify-and-fetch/gstr-1a
-   * DISABLED: GSTR-1 / GSTR-1A temporarily disabled.
-   */
-  @Post('verify-and-fetch/gstr-1a')
-  @HttpCode(HttpStatus.SERVICE_UNAVAILABLE)
-  async verifyAndFetchGstr1a(
-    @Body('year') _year?: number,
-    @Body('month') _month?: number,
-    @Body('tableName') _tableName?: string,
-    @Body('username') _username?: string,
-  ) {
-    /* DISABLED: GSTR-1A
-    const job = await this.gstComplianceService.startGstr1aVerifyAndFetch(
-      Number(year),
-      Number(month),
-      tableName,
-      username,
-    );
-    return {
-      message: 'GSTR-1A verify & fetch job accepted for background processing.',
-      jobId: job.id,
-      status: job.status,
-      checkStatusUrl: `/gst/status/${job.id}`,
-    };
-    */
-    throw new ServiceUnavailableException(
-      'GSTR-1 / GSTR-1A temporarily disabled.',
-    );
   }
 
   /**
@@ -378,45 +319,6 @@ export class GstController {
   }
 
   /**
-   * GET /gst/gstr1-return?gstin=...&customerId=...&associatedLoanId=...&year=2024
-   * Fetches one GSTIN's GSTR-1 filing track data via the public Sandbox track API.
-   * Skips Sandbox when Mongo already has all required months (Jan..current month) for the year.
-   * Uses platform auth (no taxpayer OTP). Stores in Mongo collection
-   * gst_gstR1_returns_compliance_data if absent; no aggregation.
-   */
-  @Get('gstr1-return')
-  async fetchGstr1Return(
-    @Query('gstin') _gstin?: string,
-    @Query('associatedLoanId') _associatedLoanId?: string,
-    @Query('customerId') _customerId?: string,
-    @Query('year') _year?: string,
-    @Query('dataSource') _dataSource?: string,
-    @Query('tableName') _tableName?: string,
-  ) {
-    throw new ServiceUnavailableException(
-      'GSTR-1 / GSTR-1A temporarily disabled.',
-    );
-  }
-
-  /**
-   * GET /gst/taxpayer/gstr-1/:year
-   * Fetches one GSTIN's GSTR-1 for all 12 months of the calendar year.
-   */
-  @Get('taxpayer/gstr-1/:year')
-  async fetchTaxpayerGstr1(
-    @Param('year') _year: string,
-    @Query('username') _username?: string,
-    @Query('gstin') _gstin?: string,
-    @Query('associatedLoanId') _associatedLoanId?: string,
-    @Query('customerId') _customerId?: string,
-    @Query('dataSource') _dataSource?: string,
-  ) {
-    throw new ServiceUnavailableException(
-      'GSTR-1 / GSTR-1A temporarily disabled.',
-    );
-  }
-
-  /**
    * GET /gst/taxpayer/gstr-2b/:year
    * Cache-first year fetch. Uses Mongo for existing months and calls Sandbox
    * only for missing months. Username is resolved from upload data when omitted.
@@ -460,34 +362,6 @@ export class GstController {
       { associatedLoanId, customerId, dataSource },
     );
     return this.successResponse('taxpayer-returns.gstr-3b', data);
-  }
-
-  /**
-   * GET /gst/taxpayer/gstr-1a/:year/:month
-   * DISABLED: GSTR-1 / GSTR-1A temporarily disabled.
-   */
-  @Get('taxpayer/gstr-1a/:year/:month')
-  async fetchTaxpayerGstr1a(
-    @Param('year') _year: string,
-    @Param('month') _month: string,
-    @Query('username') _username?: string,
-    @Query('gstin') _gstin?: string,
-    @Query('associatedLoanId') _associatedLoanId?: string,
-    @Query('customerId') _customerId?: string,
-    @Query('dataSource') _dataSource?: string,
-  ) {
-    /* DISABLED: GSTR-1A
-    const data = await this.gstTaxpayerReturnsService.fetchGstr1a(
-      { username, gstin },
-      Number(year),
-      Number(month),
-      { associatedLoanId, customerId, dataSource },
-    );
-    return this.successResponse('taxpayer-returns.gstr-1a', data);
-    */
-    throw new ServiceUnavailableException(
-      'GSTR-1 / GSTR-1A temporarily disabled.',
-    );
   }
 
   /**
@@ -601,7 +475,7 @@ export class GstController {
    * one Mongo document (any year/month). No year/month required.
    *
    * body (all optional):
-   *   - returnType: GSTR-1 | GSTR-2B | GSTR-3B | ALL (default ALL)
+   *   - returnType: GSTR-2B | GSTR-3B | ALL (default ALL)
    *   - customerId
    *   - loanId
    *   - tableName (default gst_uploaded_file_data)
@@ -609,7 +483,7 @@ export class GstController {
   @Post('scheduler/aggregate-returns')
   @HttpCode(HttpStatus.OK)
   async runReturnAggregationScheduler(
-    @Body('returnType') returnType?: 'GSTR-1' | 'GSTR-2B' | 'GSTR-3B' | 'ALL',
+    @Body('returnType') returnType?: SchedulerReturnType,
     @Body('customerId') customerId?: string,
     @Body('loanId') loanId?: string,
     @Body('tableName') tableName?: string,
@@ -620,11 +494,15 @@ export class GstController {
       );
     }
 
-    const normalizedReturnType = returnType ?? 'ALL';
-    const allowedReturnTypes = new Set(['GSTR-1', 'GSTR-2B', 'GSTR-3B', 'ALL']);
+    const normalizedReturnType: SchedulerReturnType = returnType ?? 'ALL';
+    const allowedReturnTypes = new Set<SchedulerReturnType>([
+      'GSTR-2B',
+      'GSTR-3B',
+      'ALL',
+    ]);
     if (!allowedReturnTypes.has(normalizedReturnType)) {
       throw new BadRequestException(
-        'Invalid returnType. Allowed: GSTR-1, GSTR-2B, GSTR-3B, ALL.',
+        'Invalid returnType. Allowed: GSTR-2B, GSTR-3B, ALL.',
       );
     }
 

@@ -7,7 +7,6 @@ import {
   GstReturnPersistenceService,
   GstReturnType,
 } from './gst-return-persistence.service';
-import { Gstr1ComplianceRecord } from '../schemas/gst-gstr1-compliance.schema';
 import { Gstr2bComplianceRecord } from '../schemas/gst-gstr2b-compliance.schema';
 import { Gstr3bComplianceRecord } from '../schemas/gst-gstr3b-compliance.schema';
 
@@ -51,9 +50,6 @@ export class GstReturnAggregationSchedulerService
     private readonly persistenceService: GstReturnPersistenceService,
     private readonly aggregationService: GstAggregationService,
     @Optional()
-    @InjectModel(Gstr1ComplianceRecord.name)
-    private readonly gstr1Model?: Model<Gstr1ComplianceRecord>,
-    @Optional()
     @InjectModel(Gstr2bComplianceRecord.name)
     private readonly gstr2bModel?: Model<Gstr2bComplianceRecord>,
     @Optional()
@@ -90,7 +86,7 @@ export class GstReturnAggregationSchedulerService
   async run(
     params: ReturnAggregationSchedulerParams = {},
   ): Promise<ReturnAggregationSchedulerResult> {
-    if (!this.gstr1Model || !this.gstr2bModel || !this.gstr3bModel) {
+    if (!this.gstr2bModel || !this.gstr3bModel) {
       throw new Error(
         'MongoDB is not enabled. Set ENABLE_MONGO=true to run return aggregation scheduler.',
       );
@@ -100,9 +96,7 @@ export class GstReturnAggregationSchedulerService
     const returnType = params.returnType ?? 'ALL';
 
     const types: GstReturnType[] =
-      returnType === 'ALL'
-        ? ['GSTR-1', 'GSTR-2B', 'GSTR-3B']
-        : [returnType];
+      returnType === 'ALL' ? ['GSTR-2B', 'GSTR-3B'] : [returnType];
 
     const loanPairs = await this.persistenceService.listLoanPairs(sourceTable);
     const filteredPairs = loanPairs.filter((pair) => {
@@ -116,7 +110,6 @@ export class GstReturnAggregationSchedulerService
     });
 
     const details: LoanCompletionStatus[] = [];
-    const gstr1Customers = new Set<string>();
     const gstr2bCustomers = new Set<string>();
     const gstr3bCustomers = new Set<string>();
 
@@ -132,9 +125,7 @@ export class GstReturnAggregationSchedulerService
         if (!status.complete) {
           continue;
         }
-        if (type === 'GSTR-1') {
-          gstr1Customers.add(pair.customerId);
-        } else if (type === 'GSTR-2B') {
+        if (type === 'GSTR-2B') {
           gstr2bCustomers.add(pair.customerId);
         } else {
           gstr3bCustomers.add(pair.customerId);
@@ -144,7 +135,6 @@ export class GstReturnAggregationSchedulerService
 
     const customersAggregated: string[] = [];
     const aggregateTargets = new Set<string>([
-      ...gstr1Customers,
       ...gstr2bCustomers,
       ...gstr3bCustomers,
     ]);
@@ -152,16 +142,6 @@ export class GstReturnAggregationSchedulerService
     for (const customerId of aggregateTargets) {
       try {
         let aggregatedForCustomer = false;
-        if (
-          (returnType === 'ALL' || returnType === 'GSTR-1') &&
-          gstr1Customers.has(customerId)
-        ) {
-          await this.aggregationService.runGstr1AggregationForCustomer(
-            customerId,
-            sourceTable,
-          );
-          aggregatedForCustomer = true;
-        }
         if (
           (returnType === 'ALL' || returnType === 'GSTR-2B') &&
           gstr2bCustomers.has(customerId)
@@ -194,7 +174,6 @@ export class GstReturnAggregationSchedulerService
 
     for (const detail of details) {
       const typeReady =
-        (detail.returnType === 'GSTR-1' && gstr1Customers.has(detail.customerId)) ||
         (detail.returnType === 'GSTR-2B' && gstr2bCustomers.has(detail.customerId)) ||
         (detail.returnType === 'GSTR-3B' && gstr3bCustomers.has(detail.customerId));
       detail.aggregated = detail.complete && typeReady;

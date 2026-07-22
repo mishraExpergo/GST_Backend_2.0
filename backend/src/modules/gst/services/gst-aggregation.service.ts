@@ -21,12 +21,9 @@ import { Gstr3bComplianceRecord } from '../schemas/gst-gstr3b-compliance.schema'
 
 import {
   mergeAggregationVariable,
-
   preserveMetricKeys,
-
-  PRIMARY_GSTR1_METRIC_KEYS,
-
-} from './gst-gstr1-aggregation.util';
+  PRIMARY_GST_COMPLIANCE_METRIC_KEYS,
+} from './gst-aggregation-variable.util';
 import {
   computePrimaryGstr2bAggregationMetrics,
   computeSecondaryGstr2bAggregationMetrics,
@@ -77,7 +74,11 @@ interface UploadRow {
 
   primary_pan: string | null;
 
+  primary_gst_no: string | null;
+
   considered_entity_pan: string | null;
+
+  considered_entity_gst_no: string | null;
 
 }
 
@@ -185,7 +186,6 @@ const VERIFY_2B_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_2B';
 const VERIFY_3B_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_3B';
 const OBSOLETE_GSTR3B_KEYS = ['PRIMARY_TOTAL_TURNOVER', 'CONSIDERED_TOTAL_TURNOVER'] as const;
 const HISTORY_SOURCE_VERIFY_FETCH = 'VERIFY_FETCH';
-const HISTORY_SOURCE_GSTR1 = 'GSTR-1';
 const HISTORY_SOURCE_GSTR2B = 'GSTR-2B';
 const HISTORY_SOURCE_GSTR3B = 'GSTR-3B';
 
@@ -327,55 +327,6 @@ export class GstAggregationService {
   }
 
 
-
-  /**
-
-   * Called when a GSTR-1 track job finishes. Runs GSTR-1 aggregation for each
-
-   * customer in the job into primary_gst_aggregation.
-
-   */
-
-  /**
-   * DISABLED: GSTR-1 aggregation — Mongo collection / flow temporarily disabled.
-   */
-  async triggerAfterGstrJob(jobId: string): Promise<void> {
-    /* DISABLED: GSTR-1
-    previous implementation ran GSTR-1 aggregation from Mongo.
-    */
-    this.logger.warn(
-      `GSTR-1 / GSTR-1A temporarily disabled; skipping GSTR-1 aggregation for job ${jobId}.`,
-    );
-  }
-
-  /**
-   * DISABLED: GSTR-1 aggregation.
-   */
-  async runGstr1AggregationForTable(
-    rawTableName?: string,
-  ): Promise<{ customersProcessed: number }> {
-    void rawTableName;
-    /* DISABLED: GSTR-1 table aggregation */
-    this.logger.warn(
-      'GSTR-1 / GSTR-1A temporarily disabled; skipping GSTR-1 table aggregation.',
-    );
-    return { customersProcessed: 0 };
-  }
-
-  /**
-   * DISABLED: GSTR-1 aggregation.
-   */
-  async runGstr1AggregationForCustomer(
-    customerId: string,
-    sourceTable: string,
-  ): Promise<void> {
-    void customerId;
-    void sourceTable;
-    /* DISABLED: GSTR-1 customer aggregation */
-    this.logger.warn(
-      'GSTR-1 / GSTR-1A temporarily disabled; skipping GSTR-1 customer aggregation.',
-    );
-  }
 
   /**
    * Called when a GSTR-2B job finishes. Runs GSTR-2B aggregation for each
@@ -543,26 +494,31 @@ export class GstAggregationService {
       }
     }
 
-    if (primaryRowsToSave.length > 0) {
+    const dedupedPrimaryRows = this.dedupePrimaryRowsByLoanId(primaryRowsToSave);
+    const dedupedSecondaryRows = this.dedupeSecondaryRowsByLoanId(
+      secondaryRowsToSave,
+    );
+
+    if (dedupedPrimaryRows.length > 0) {
       await this.aggregationHistoryService.upsertPrimaryAggregation(
         this.primaryAggRepo,
-        primaryRowsToSave,
+        dedupedPrimaryRows,
         existingPrimaryByLoan,
         HISTORY_SOURCE_GSTR2B,
       );
     }
 
-    if (secondaryRowsToSave.length > 0) {
+    if (dedupedSecondaryRows.length > 0) {
       await this.aggregationHistoryService.upsertSecondaryAggregation(
         this.secondaryAggRepo,
-        secondaryRowsToSave,
+        dedupedSecondaryRows,
         existingSecondaryByLoan,
         HISTORY_SOURCE_GSTR2B,
       );
     }
 
     this.logger.log(
-      `customerId=${customerId}: merged GSTR-2B metrics into ${primaryRowsToSave.length} primary and ${secondaryRowsToSave.length} secondary aggregation row(s).`,
+      `customerId=${customerId}: merged GSTR-2B metrics into ${dedupedPrimaryRows.length} primary and ${dedupedSecondaryRows.length} secondary aggregation row(s).`,
     );
   }
 
@@ -724,26 +680,31 @@ export class GstAggregationService {
       }
     }
 
-    if (primaryRowsToSave.length > 0) {
+    const dedupedPrimaryRows = this.dedupePrimaryRowsByLoanId(primaryRowsToSave);
+    const dedupedSecondaryRows = this.dedupeSecondaryRowsByLoanId(
+      secondaryRowsToSave,
+    );
+
+    if (dedupedPrimaryRows.length > 0) {
       await this.aggregationHistoryService.upsertPrimaryAggregation(
         this.primaryAggRepo,
-        primaryRowsToSave,
+        dedupedPrimaryRows,
         existingPrimaryByLoan,
         HISTORY_SOURCE_GSTR3B,
       );
     }
 
-    if (secondaryRowsToSave.length > 0) {
+    if (dedupedSecondaryRows.length > 0) {
       await this.aggregationHistoryService.upsertSecondaryAggregation(
         this.secondaryAggRepo,
-        secondaryRowsToSave,
+        dedupedSecondaryRows,
         existingSecondaryByLoan,
         HISTORY_SOURCE_GSTR3B,
       );
     }
 
     this.logger.log(
-      `customerId=${customerId}: merged GSTR-3B metrics into ${primaryRowsToSave.length} primary and ${secondaryRowsToSave.length} secondary aggregation row(s).`,
+      `customerId=${customerId}: merged GSTR-3B metrics into ${dedupedPrimaryRows.length} primary and ${dedupedSecondaryRows.length} secondary aggregation row(s).`,
     );
   }
 
@@ -883,9 +844,9 @@ export class GstAggregationService {
 
    * PRIMARY entity aggregation → primary_gst_aggregation table.
 
-   * Uses primary_pan from the Postgres upload table and compliance fields
+   * PRIMARY_TOTAL_GST_COUNT = COUNT(primary_gst_no) GROUP BY associated_loan_id.
 
-   * extracted from gst_compliance_data search responses.
+   * Exactly one primary row per customer + loan.
 
    */
 
@@ -910,14 +871,9 @@ export class GstAggregationService {
       }
     }
 
-
-
     const uploadRows = await this.getUploadRowsForCustomer(
-
       context.customerId,
-
       context.sourceTable,
-
     );
 
     if (uploadRows.length === 0) {
@@ -930,34 +886,40 @@ export class GstAggregationService {
       return;
     }
 
-    const rows: Partial<PrimaryGstAggregation>[] = [];
+    const rowsByLoan = new Map<string, Partial<PrimaryGstAggregation>>();
 
-    for (const uploadRow of uploadRows) {
-      const primaryPan = this.normalizePan(uploadRow.primary_pan);
+    for (const [loanId, loanUploadRows] of this.groupUploadRowsByLoan(
+      uploadRows,
+    )) {
+      const totalGstCount = this.countPrimaryGstinsForLoan(loanUploadRows);
+      const loanComplianceRecords = this.getLoanPrimaryComplianceRecords(
+        loanId,
+        allComplianceRecords,
+      );
 
-      if (!primaryPan) {
+      if (totalGstCount === 0 && loanComplianceRecords.length === 0) {
         continue;
       }
 
-      const panRecords = allComplianceRecords.filter(
-        (record) => this.getRecordPan(record) === primaryPan,
-      );
+      const metrics =
+        this.computePrimaryAggregationMetrics(loanComplianceRecords);
+      metrics.PRIMARY_TOTAL_GST_COUNT = totalGstCount;
 
-      const metrics = this.computePrimaryAggregationMetrics(panRecords);
-
-      const existingJson = existingByLoan.get(uploadRow.associated_loan_id) ?? null;
+      const existingJson = existingByLoan.get(loanId) ?? null;
       const aggregationObject = this.buildAggregationObject(
         existingJson,
-        PRIMARY_GSTR1_METRIC_KEYS,
+        PRIMARY_GST_COMPLIANCE_METRIC_KEYS,
         metrics,
       );
 
-      rows.push({
+      rowsByLoan.set(loanId, {
         customerId: context.customerId,
-        associatedLoanId: uploadRow.associated_loan_id,
+        associatedLoanId: loanId,
         aggregationVariable: aggregationObject,
       });
     }
+
+    const rows = Array.from(rowsByLoan.values());
 
     await this.aggregationHistoryService.replacePrimaryAggregation(
       this.primaryAggRepo,
@@ -966,25 +928,18 @@ export class GstAggregationService {
       HISTORY_SOURCE_VERIFY_FETCH,
     );
 
-
-
     this.logger.log(
-
       `customerId=${context.customerId}: wrote ${rows.length} primary_gst_aggregation row(s).`,
-
     );
-
   }
-
-
 
   /**
 
    * CONSIDERED_ENTITY aggregation → secondary_gst_aggregation table.
 
-   * Uses considered_entity_pan from the Postgres upload table and compliance
+   * SECONDARY_TOTAL_GST_COUNT = COUNT(considered_entity_gst_no) GROUP BY associated_loan_id.
 
-   * fields extracted from gst_compliance_data search responses.
+   * Exactly one secondary row per customer + loan.
 
    */
 
@@ -997,11 +952,8 @@ export class GstAggregationService {
   ): Promise<void> {
 
     const uploadRows = await this.getUploadRowsForCustomer(
-
       context.customerId,
-
       context.sourceTable,
-
     );
 
     if (uploadRows.length === 0) {
@@ -1014,30 +966,34 @@ export class GstAggregationService {
       return;
     }
 
-    const rows: Partial<SecondaryGstAggregation>[] = [];
+    const rowsByLoan = new Map<string, Partial<SecondaryGstAggregation>>();
 
-    for (const uploadRow of uploadRows) {
-      const consideredEntityPan = this.normalizePan(
-        uploadRow.considered_entity_pan,
-      );
+    for (const [loanId, loanUploadRows] of this.groupUploadRowsByLoan(
+      uploadRows,
+    )) {
+      const totalGstCount = this.countConsideredGstinsForLoan(loanUploadRows);
+      const loanComplianceRecords =
+        this.getLoanConsideredEntityComplianceRecords(
+          loanId,
+          allComplianceRecords,
+        );
 
-      if (!consideredEntityPan) {
+      if (totalGstCount === 0 && loanComplianceRecords.length === 0) {
         continue;
       }
 
-      const panRecords = allComplianceRecords.filter(
-        (record) => this.getRecordPan(record) === consideredEntityPan,
-      );
+      const metrics =
+        this.computeSecondaryAggregationMetrics(loanComplianceRecords);
+      metrics.SECONDARY_TOTAL_GST_COUNT = totalGstCount;
 
-      const metrics = this.computeSecondaryAggregationMetrics(panRecords);
-
-      const aggregationObject = JSON.stringify(metrics);
-      rows.push({
+      rowsByLoan.set(loanId, {
         customerId: context.customerId,
-        associatedLoanId: uploadRow.associated_loan_id,
-        aggregationVariable: aggregationObject,
+        associatedLoanId: loanId,
+        aggregationVariable: JSON.stringify(metrics),
       });
     }
+
+    const rows = Array.from(rowsByLoan.values());
 
     await this.aggregationHistoryService.replaceSecondaryAggregation(
       this.secondaryAggRepo,
@@ -1046,14 +1002,9 @@ export class GstAggregationService {
       HISTORY_SOURCE_VERIFY_FETCH,
     );
 
-
-
     this.logger.log(
-
       `customerId=${context.customerId}: wrote ${rows.length} secondary_gst_aggregation row(s).`,
-
     );
-
   }
 
 
@@ -1360,7 +1311,168 @@ export class GstAggregationService {
 
   }
 
+  private groupUploadRowsByLoan(
+    uploadRows: UploadRow[],
+  ): Map<string, UploadRow[]> {
+    const rowsByLoan = new Map<string, UploadRow[]>();
 
+    for (const row of uploadRows) {
+      const loanId = row.associated_loan_id;
+      const existing = rowsByLoan.get(loanId) ?? [];
+      existing.push(row);
+      rowsByLoan.set(loanId, existing);
+    }
+
+    return rowsByLoan;
+  }
+
+  /**
+   * COUNT(primary_gst_no) for all upload rows on a loan (not distinct).
+   */
+  private countPrimaryGstinsForLoan(loanRows: UploadRow[]): number {
+    let count = 0;
+
+    for (const row of loanRows) {
+      const gstin = String(row.primary_gst_no ?? '').trim();
+      if (gstin) {
+        count++;
+      }
+    }
+
+    return count;
+  }
+
+  /**
+   * COUNT(considered_entity_gst_no) for all upload rows on a loan (not distinct).
+   */
+  private countConsideredGstinsForLoan(loanRows: UploadRow[]): number {
+    let count = 0;
+
+    for (const row of loanRows) {
+      const gstin = String(row.considered_entity_gst_no ?? '').trim();
+      if (gstin) {
+        count++;
+      }
+    }
+
+    return count;
+  }
+
+  private getLoanPrimaryComplianceRecords(
+    loanId: string,
+    allComplianceRecords: GstComplianceRecord[],
+  ): GstComplianceRecord[] {
+    const normalizedLoanId = String(loanId ?? '').trim();
+
+    return allComplianceRecords.filter((record) => {
+      if (String(record.loanId ?? '').trim() !== normalizedLoanId) {
+        return false;
+      }
+
+      return (
+        String(record.entityType ?? '').trim().toUpperCase() === 'PRIMARY'
+      );
+    });
+  }
+
+  private getLoanConsideredEntityComplianceRecords(
+    loanId: string,
+    allComplianceRecords: GstComplianceRecord[],
+  ): GstComplianceRecord[] {
+    const normalizedLoanId = String(loanId ?? '').trim();
+
+    return allComplianceRecords.filter((record) => {
+      if (String(record.loanId ?? '').trim() !== normalizedLoanId) {
+        return false;
+      }
+
+      return (
+        String(record.entityType ?? '').trim().toUpperCase() ===
+        'CONSIDERED_ENTITY'
+      );
+    });
+  }
+
+  private parseAggregationVariable(
+    value: string | null | undefined,
+  ): Record<string, unknown> {
+    if (!value) {
+      return {};
+    }
+
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      return {};
+    }
+
+    return {};
+  }
+
+  private dedupePrimaryRowsByLoanId(
+    rows: Partial<PrimaryGstAggregation>[],
+  ): Partial<PrimaryGstAggregation>[] {
+    const byLoan = new Map<string, Partial<PrimaryGstAggregation>>();
+
+    for (const row of rows) {
+      const loanId = String(row.associatedLoanId ?? '').trim();
+      if (!loanId) {
+        continue;
+      }
+
+      const existing = byLoan.get(loanId);
+      if (!existing) {
+        byLoan.set(loanId, row);
+        continue;
+      }
+
+      byLoan.set(loanId, {
+        ...existing,
+        ...row,
+        id: existing.id ?? row.id,
+        aggregationVariable: mergeAggregationVariable(
+          existing.aggregationVariable ?? null,
+          this.parseAggregationVariable(row.aggregationVariable),
+        ),
+      });
+    }
+
+    return Array.from(byLoan.values());
+  }
+
+  private dedupeSecondaryRowsByLoanId(
+    rows: Partial<SecondaryGstAggregation>[],
+  ): Partial<SecondaryGstAggregation>[] {
+    const byLoan = new Map<string, Partial<SecondaryGstAggregation>>();
+
+    for (const row of rows) {
+      const loanId = String(row.associatedLoanId ?? '').trim();
+      if (!loanId) {
+        continue;
+      }
+
+      const existing = byLoan.get(loanId);
+      if (!existing) {
+        byLoan.set(loanId, row);
+        continue;
+      }
+
+      byLoan.set(loanId, {
+        ...existing,
+        ...row,
+        id: existing.id ?? row.id,
+        aggregationVariable: mergeAggregationVariable(
+          existing.aggregationVariable ?? null,
+          this.parseAggregationVariable(row.aggregationVariable),
+        ),
+      });
+    }
+
+    return Array.from(byLoan.values());
+  }
 
   private normalizePan(pan: string | null | undefined): string | null {
 
@@ -1487,11 +1599,16 @@ export class GstAggregationService {
 
       primary_pan: string | null;
 
+      primary_gst_no: string | null;
+
       considered_entity_pan: string | null;
+
+      considered_entity_gst_no: string | null;
 
     }> = await this.dataSource.query(
 
-      `SELECT customer_id, associated_loan_id, primary_pan, considered_entity_pan
+      `SELECT customer_id, associated_loan_id, primary_pan, primary_gst_no,
+              considered_entity_pan, considered_entity_gst_no
 
          FROM "${sourceTable}"
 
@@ -1513,7 +1630,11 @@ export class GstAggregationService {
 
         primary_pan: row.primary_pan ?? null,
 
+        primary_gst_no: row.primary_gst_no ?? null,
+
         considered_entity_pan: row.considered_entity_pan ?? null,
+
+        considered_entity_gst_no: row.considered_entity_gst_no ?? null,
 
       }))
 

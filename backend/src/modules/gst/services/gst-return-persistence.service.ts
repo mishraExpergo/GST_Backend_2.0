@@ -4,21 +4,16 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { DataSource } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
-import { Gstr1ComplianceRecord } from '../schemas/gst-gstr1-compliance.schema';
-import { Gstr1ReturnsComplianceRecord } from '../schemas/gst-gstr1-returns-compliance.schema';
 import { Gstr2bComplianceRecord } from '../schemas/gst-gstr2b-compliance.schema';
 import { Gstr3bComplianceRecord } from '../schemas/gst-gstr3b-compliance.schema';
-import { buildGstr1ReturnsFromResponse } from './gst-gstr1-aggregation.util';
 import {
-  extractCoveredMonthsFromGstr1ReturnTrack,
-  extractCoveredMonthsFromGstr1Taxpayer,
   extractCoveredMonthsFromGstr2b,
   extractCoveredMonthsFromGstr3b,
   getMissingMonths,
   getRequiredMonthsForYear,
 } from './gst-return-month-coverage.util';
 
-export type GstReturnType = 'GSTR-1' | 'GSTR-2B' | 'GSTR-3B';
+export type GstReturnType = 'GSTR-2B' | 'GSTR-3B';
 export type GstEntityType = 'PRIMARY' | 'CONSIDERED_ENTITY';
 
 export interface ReturnPersistenceContext {
@@ -46,12 +41,6 @@ export class GstReturnPersistenceService {
     private readonly config: ConfigService,
     @InjectDataSource() private readonly dataSource: DataSource,
     @Optional()
-    @InjectModel(Gstr1ComplianceRecord.name)
-    private readonly gstr1Model?: Model<Gstr1ComplianceRecord>,
-    @Optional()
-    @InjectModel(Gstr1ReturnsComplianceRecord.name)
-    private readonly gstr1ReturnsModel?: Model<Gstr1ReturnsComplianceRecord>,
-    @Optional()
     @InjectModel(Gstr2bComplianceRecord.name)
     private readonly gstr2bModel?: Model<Gstr2bComplianceRecord>,
     @Optional()
@@ -63,14 +52,6 @@ export class GstReturnPersistenceService {
     if (!this.gstr2bModel || !this.gstr3bModel) {
       throw new BadRequestException(
         'MongoDB is not enabled. Set ENABLE_MONGO=true to store GSTR-2B/3B return data.',
-      );
-    }
-  }
-
-  assertGstr1ReturnsMongoEnabled(): void {
-    if (!this.gstr1ReturnsModel) {
-      throw new BadRequestException(
-        'MongoDB is not enabled. Set ENABLE_MONGO=true to store GSTR-1 return track data.',
       );
     }
   }
@@ -176,126 +157,6 @@ export class GstReturnPersistenceService {
     return getMissingMonths(requiredMonths, coveredMonths);
   }
 
-  async findGstr1ReturnTrackDocument(
-    loanId: string,
-    gstin: string,
-  ): Promise<Record<string, any> | null> {
-    this.assertGstr1ReturnsMongoEnabled();
-    const normalizedGstin = gstin.trim().toUpperCase();
-
-    return this.gstr1ReturnsModel!
-      .findOne({ loanId, gstin: normalizedGstin })
-      .lean()
-      .exec();
-  }
-
-  async getCoveredMonthsForGstr1ReturnTrack(
-    loanId: string,
-    gstin: string,
-    year: number,
-  ): Promise<Set<number>> {
-    const doc = await this.findGstr1ReturnTrackDocument(loanId, gstin);
-    return extractCoveredMonthsFromGstr1ReturnTrack(doc, year);
-  }
-
-  async getMissingMonthsForGstr1ReturnTrack(
-    loanId: string,
-    gstin: string,
-    year: number,
-  ): Promise<number[]> {
-    const requiredMonths = getRequiredMonthsForYear(year);
-    const coveredMonths = await this.getCoveredMonthsForGstr1ReturnTrack(
-      loanId,
-      gstin,
-      year,
-    );
-    return getMissingMonths(requiredMonths, coveredMonths);
-  }
-
-  async findExistingGstr1ReturnTrack(
-    loanId: string,
-    gstin: string,
-    year: number,
-  ): Promise<Record<string, any> | null> {
-    const doc = await this.findGstr1ReturnTrackDocument(loanId, gstin);
-    if (!doc) {
-      return null;
-    }
-
-    const missingMonths = await this.getMissingMonthsForGstr1ReturnTrack(
-      loanId,
-      gstin,
-      year,
-    );
-    if (missingMonths.length > 0) {
-      return null;
-    }
-
-    return doc.gstrResponse ?? doc;
-  }
-
-  async storeGstr1ReturnTrack(
-    context: ReturnPersistenceContext,
-    sandboxPayload: Record<string, any>,
-  ): Promise<{ stored: boolean; reason: string }> {
-    this.assertGstr1ReturnsMongoEnabled();
-
-    const loanId = context.associatedLoanId;
-    const gstin = context.gstin.trim().toUpperCase();
-    const sourceTable = this.resolveSourceTable(context.sourceTable);
-    const unit = await this.resolveUnitFromUpload(
-      context.customerId,
-      loanId,
-      gstin,
-      sourceTable,
-    );
-
-    const existing = await this.findGstr1ReturnTrackDocument(loanId, gstin);
-    const legalName = String(
-      sandboxPayload?.data?.data?.lgnm ?? sandboxPayload?.data?.lgnm ?? '',
-    );
-    const status = String(
-      sandboxPayload?.data?.data?.status ??
-        sandboxPayload?.data?.data?.sts ??
-        sandboxPayload?.data?.status ??
-        'FETCHED',
-    );
-    const pan =
-      (unit?.pan ?? '').trim().toUpperCase() ||
-      (gstin.length >= 12 ? gstin.substring(2, 12) : '');
-    const entityType = unit?.entityType ?? 'PRIMARY';
-    const payload = {
-      loanId,
-      customerId: context.customerId,
-      entityType,
-      gstin,
-      gstNo: gstin,
-      pan,
-      sourceTable,
-      legalName,
-      status,
-      returnType: 'GSTR-1',
-      returns: buildGstr1ReturnsFromResponse(sandboxPayload),
-      gstrResponse: sandboxPayload,
-      systemMetadata: {
-        fetchedAt: new Date().toISOString(),
-        dataSource: context.dataSource ?? 'sandbox',
-        fetchMode: 'gstr1-return',
-      },
-    };
-
-    if (existing) {
-      await this.gstr1ReturnsModel!.updateOne(
-        { loanId, gstin },
-        { $set: payload },
-      );
-      return { stored: true, reason: 'updated' };
-    }
-
-    await this.gstr1ReturnsModel!.create(payload);
-    return { stored: true, reason: 'inserted' };
-  }
-
   async storeIfAbsent(
     returnType: GstReturnType,
     context: ReturnPersistenceContext,
@@ -340,36 +201,6 @@ export class GstReturnPersistenceService {
       dataSource: context.dataSource ?? 'sandbox',
       fetchMode: 'taxpayer-single-gst',
     };
-
-    if (returnType === 'GSTR-1') {
-      const payload = {
-        loanId,
-        customerId: context.customerId,
-        entityType,
-        gstin,
-        gstNo: gstin,
-        pan,
-        year,
-        month,
-        financialYear: String(year),
-        sourceTable,
-        legalName,
-        status,
-        returnType: 'GSTR-1',
-        returns: buildGstr1ReturnsFromResponse(sandboxPayload),
-        gstrResponse: sandboxPayload,
-        systemMetadata,
-      };
-      const hadDoc = Boolean(
-        await this.findDocumentForMonth(returnType, loanId, gstin, year, month),
-      );
-      await this.gstr1Model!.updateOne(
-        { loanId, gstin, year, month },
-        { $set: payload },
-        { upsert: true },
-      );
-      return { stored: true, reason: hadDoc ? 'updated' : 'inserted' };
-    }
 
     if (returnType === 'GSTR-2B') {
       const payload = {
@@ -522,13 +353,6 @@ export class GstReturnPersistenceService {
     this.assertMongoEnabled();
     const normalizedGstin = gstin.trim().toUpperCase();
 
-    if (returnType === 'GSTR-1') {
-      const count = await this.gstr1Model!
-        .countDocuments({ loanId, gstin: normalizedGstin })
-        .exec();
-      return count > 0;
-    }
-
     if (returnType === 'GSTR-2B') {
       const count = await this.gstr2bModel!
         .countDocuments({ loanId, gstin: normalizedGstin })
@@ -563,27 +387,6 @@ export class GstReturnPersistenceService {
     gstin: string,
     year: number,
   ): Promise<Array<Record<string, any>>> {
-    if (returnType === 'GSTR-1') {
-      const monthlyDocs = await this.gstr1Model!
-        .find({ loanId, gstin, year })
-        .lean()
-        .exec();
-      if (monthlyDocs.length > 0) {
-        return monthlyDocs;
-      }
-
-      const legacyDocs = await this.gstr1Model!
-        .find({
-          loanId,
-          gstin,
-          financialYear: String(year),
-          $or: [{ month: { $exists: false } }, { month: null }],
-        })
-        .lean()
-        .exec();
-      return legacyDocs;
-    }
-
     if (returnType === 'GSTR-2B') {
       return this.gstr2bModel!.find({ loanId, gstin, year }).lean().exec();
     }
@@ -598,30 +401,6 @@ export class GstReturnPersistenceService {
     year: number,
     month: number,
   ): Promise<Record<string, any> | null> {
-    if (returnType === 'GSTR-1') {
-      const doc = await this.gstr1Model!
-        .findOne({ loanId, gstin, year, month })
-        .lean()
-        .exec();
-      if (doc) {
-        return doc;
-      }
-
-      if (month === 1) {
-        return this.gstr1Model!
-          .findOne({
-            loanId,
-            gstin,
-            financialYear: String(year),
-            $or: [{ month: { $exists: false } }, { month: null }],
-          })
-          .lean()
-          .exec();
-      }
-
-      return null;
-    }
-
     if (returnType === 'GSTR-2B') {
       return this.gstr2bModel!
         .findOne({ loanId, gstin, year, month })
@@ -640,9 +419,6 @@ export class GstReturnPersistenceService {
     doc: Record<string, any>,
     year: number,
   ): Set<number> {
-    if (returnType === 'GSTR-1') {
-      return extractCoveredMonthsFromGstr1Taxpayer(doc, year);
-    }
     if (returnType === 'GSTR-2B') {
       return extractCoveredMonthsFromGstr2b(doc, year);
     }
@@ -663,9 +439,6 @@ export class GstReturnPersistenceService {
     returnType: GstReturnType,
     doc: Record<string, any>,
   ): Record<string, any> {
-    if (returnType === 'GSTR-1') {
-      return doc.gstrResponse ?? doc;
-    }
     if (returnType === 'GSTR-2B') {
       return doc.gstr2bResponse ?? doc;
     }
