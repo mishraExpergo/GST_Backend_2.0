@@ -172,34 +172,16 @@ export function extractCoveredMonthsFromGstr1Taxpayer(
   return covered;
 }
 
-function collectSupprdAndSupfildt(
-  node: unknown,
-  covered: Set<number>,
-  filterYear: number,
-): void {
-  if (Array.isArray(node)) {
-    for (const item of node) {
-      collectSupprdAndSupfildt(item, covered, filterYear);
-    }
-    return;
-  }
-
-  if (!node || typeof node !== 'object') {
-    return;
-  }
-
-  const obj = node as Record<string, any>;
-  addMonthYear(covered, parseMmYyyy(obj.supprd ?? obj.sup_prd), filterYear);
-  addMonthYear(covered, parseDdMmYyyy(obj.supfildt ?? obj.sup_fildt), filterYear);
-
-  for (const value of Object.values(obj)) {
-    if (value && typeof value === 'object') {
-      collectSupprdAndSupfildt(value, covered, filterYear);
-    }
-  }
-}
-
-/** GSTR-2B monthly document (`gst_2b_compliance_data`). */
+/**
+ * GSTR-2B monthly document (`gst_2b_compliance_data`).
+ *
+ * Coverage is based only on the stored fetch period (doc.year/month) and, if
+ * present, the return-period fields on the response envelope.
+ *
+ * Do NOT use invoice-level `supprd` / `supfildt`: those are supplier filing
+ * periods inside one month's GSTR-2B and would falsely mark other months as
+ * already fetched.
+ */
 export function extractCoveredMonthsFromGstr2b(
   doc: Record<string, any> | null | undefined,
   year: number,
@@ -211,7 +193,27 @@ export function extractCoveredMonthsFromGstr2b(
 
   addMonthYear(covered, parseDocYearMonth(doc), year);
 
-  collectSupprdAndSupfildt(doc.gstr2bResponse ?? doc, covered, year);
+  const payload = doc.gstr2bResponse ?? doc;
+  const nested = payload?.data?.data ?? payload?.data ?? payload;
+  const payloadYear = Number(nested?.year ?? payload?.year ?? doc?.year);
+  const payloadMonth = Number(nested?.month ?? payload?.month ?? doc?.month);
+  if (
+    Number.isInteger(payloadYear) &&
+    Number.isInteger(payloadMonth) &&
+    payloadMonth >= 1 &&
+    payloadMonth <= 12
+  ) {
+    addMonthYear(covered, { year: payloadYear, month: payloadMonth }, year);
+  }
+
+  const fromPeriod = parseMmYyyy(
+    nested?.ret_period ??
+      nested?.ret_prd ??
+      nested?.fp ??
+      payload?.ret_period ??
+      payload?.ret_prd,
+  );
+  addMonthYear(covered, fromPeriod, year);
 
   return covered;
 }
