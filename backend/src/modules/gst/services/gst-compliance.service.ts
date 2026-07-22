@@ -548,6 +548,10 @@ export class GstComplianceService {
       }
       if (operation === VERIFY_3B_OPERATION) {
         await this.gstAggregationService.triggerAfterGstr3bJob(jobId);
+        return;
+      }
+      if (operation === 'GSTIN_VERIFY_AND_FETCH_GSTR_TRACK') {
+        await this.gstAggregationService.triggerAfterGstrTrackJob(jobId);
       }
     } catch (err) {
       this.logger.error(

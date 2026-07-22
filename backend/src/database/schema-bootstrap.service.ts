@@ -99,7 +99,7 @@ export class SchemaBootstrapService implements OnModuleInit {
         gstr_type text NOT NULL,
         api_name text NOT NULL,
         retry_count int NOT NULL DEFAULT 0,
-        status character varying(32) NOT NULL DEFAULT 'PROCESSING',
+        status character varying(32) NOT NULL DEFAULT 'PENDING',
         associated_loan_id text NULL,
         customer_id text NULL,
         gst_number text NULL,

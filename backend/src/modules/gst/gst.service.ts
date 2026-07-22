@@ -137,9 +137,19 @@ export class GstService {
       .returning(['completedChunks', 'totalChunks'])
       .execute();
 
-    const raw = (result.raw?.[0] ?? {}) as Record<string, any>;
-    const completed = Number(raw.completedChunks ?? raw.completedchunks ?? 0);
-    const total = Number(raw.totalChunks ?? raw.totalchunks ?? 0);
+    const raw = (result.raw?.[0] ?? result.generatedMaps?.[0] ?? {}) as Record<
+      string,
+      any
+    >;
+    const completed = Number(
+      raw.completedChunks ??
+        raw.completedchunks ??
+        raw.completed_chunks ??
+        0,
+    );
+    const total = Number(
+      raw.totalChunks ?? raw.totalchunks ?? raw.total_chunks ?? 0,
+    );
     const justCompleted = total > 0 && completed === total;
     return { completed, total, justCompleted };
   }
@@ -435,11 +445,11 @@ export class GstService {
       if (typeof v !== 'boolean' && !boolStr) allBool = false;
 
       let asNumber: number | null = null;
+      // Only native numbers count toward NUMERIC/INTEGER. Numeric strings
+      // (e.g. IDs with leading zeros from Excel) must stay TEXT. CSV uploads
+      // already coerce numeric cells via sheet_to_json({ raw: false }).
       if (typeof v === 'number' && Number.isFinite(v)) {
         asNumber = v;
-      } else if (typeof v === 'string' && v.trim() !== '') {
-        const n = Number(v);
-        if (Number.isFinite(n)) asNumber = n;
       }
       if (asNumber === null) {
         allInt = false;

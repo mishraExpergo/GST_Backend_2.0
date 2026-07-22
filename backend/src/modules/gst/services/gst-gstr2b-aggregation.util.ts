@@ -1,4 +1,5 @@
 import { Gstr2bComplianceRecord } from '../schemas/gst-gstr2b-compliance.schema';
+import { CONSIDERED_GSTR2B_SUPPLIER_METRIC_KEYS as CONSIDERED_GSTR2B_SUPPLIER_METRIC_KEYS_FROM_VAR } from './gst-aggregation-variable.util';
 
 export interface PrimaryGstr2bAggregationMetrics {
   PRIMARY_TOTAL_SUPPLIER_COUNT: number;
@@ -14,7 +15,11 @@ export interface PrimaryGstr2bAggregationMetrics {
   PRIMARY_INELIGIBLE_INVOICE_COUNT: number;
 }
 
-export interface SecondaryGstr2bAggregationMetrics {
+/**
+ * Loan-level considered-supplier metrics written to secondary_gst_aggregation
+ * after GSTR-2B aggregation (see Considered_Supplier_Metrics_Logic.docx).
+ */
+export interface ConsideredSupplierGstr2bAggregationMetrics {
   CONSIDERED_TOTAL_SUPPLIER_COUNT: number;
   CONSIDERED_SUPPLIER_TOTAL_INELIGIBLE_ITC: number;
   CONSIDERED_SUPPLIER_TOTAL_REVERSED_ITC: number;
@@ -27,6 +32,10 @@ export interface SecondaryGstr2bAggregationMetrics {
   CONSIDERED_SUPPLIER_SGST_ITC: number;
   CONSIDERED_SUPPLIER_CESS_ITC: number;
 }
+
+/** @deprecated Prefer ConsideredSupplierGstr2bAggregationMetrics */
+export type SecondaryGstr2bAggregationMetrics =
+  ConsideredSupplierGstr2bAggregationMetrics;
 
 export const PRIMARY_GSTR2B_METRIC_KEYS = [
   'PRIMARY_TOTAL_SUPPLIER_COUNT',
@@ -42,19 +51,11 @@ export const PRIMARY_GSTR2B_METRIC_KEYS = [
   'PRIMARY_INELIGIBLE_INVOICE_COUNT',
 ] as const;
 
-export const SECONDARY_GSTR2B_METRIC_KEYS = [
-  'CONSIDERED_TOTAL_SUPPLIER_COUNT',
-  'CONSIDERED_SUPPLIER_TOTAL_INELIGIBLE_ITC',
-  'CONSIDERED_SUPPLIER_TOTAL_REVERSED_ITC',
-  'CONSIDERED_SUPPLIER_TOTAL_ELIGIBLE_ITC',
-  'CONSIDERED_SUPPLIER_TOTAL_INVOICE_COUNT',
-  'CONSIDERED_SUPPLIER_ELIGIBLE_INVOICE_COUNT',
-  'CONSIDERED_SUPPLIER_INELIGIBLE_INVOICE_COUNT',
-  'CONSIDERED_SUPPLIER_IGST_ITC',
-  'CONSIDERED_SUPPLIER_CGST_ITC',
-  'CONSIDERED_SUPPLIER_SGST_ITC',
-  'CONSIDERED_SUPPLIER_CESS_ITC',
-] as const;
+export const CONSIDERED_GSTR2B_SUPPLIER_METRIC_KEYS =
+  CONSIDERED_GSTR2B_SUPPLIER_METRIC_KEYS_FROM_VAR;
+
+/** @deprecated Prefer CONSIDERED_GSTR2B_SUPPLIER_METRIC_KEYS */
+export const SECONDARY_GSTR2B_METRIC_KEYS = CONSIDERED_GSTR2B_SUPPLIER_METRIC_KEYS;
 
 interface InvoiceMetricFact {
   supplierGstin: string | null;
@@ -73,6 +74,21 @@ interface TraversalContext {
   supplierGstin: string | null;
   invoiceNumber: string | null;
   itcEligibility: 'ELIGIBLE' | 'INELIGIBLE' | null;
+}
+
+/** Per Considered Entity PAN supplier metrics (before loan roll-up). */
+export interface ConsideredEntityPanSupplierMetrics {
+  totalSupplierCount: number;
+  totalIneligibleItc: number;
+  totalReversedItc: number;
+  totalEligibleItc: number;
+  totalInvoiceCount: number;
+  eligibleInvoiceCount: number;
+  ineligibleInvoiceCount: number;
+  igstItc: number;
+  cgstItc: number;
+  sgstItc: number;
+  cessItc: number;
 }
 
 export function normalizePan(pan: string | null | undefined): string | null {
@@ -110,53 +126,159 @@ export function computePrimaryGstr2bAggregationMetrics(
   const summary = computePanSummary(records);
   return {
     PRIMARY_TOTAL_SUPPLIER_COUNT: summary.totalSupplierCount,
-    PRIMARY_SUPPLIER_TOTAL_ELIGIBLE_ITC: summary.totalEligibleItc,
-    PRIMARY_SUPPLIER_TOTAL_INELIGIBLE_ITC: summary.totalIneligibleItc,
-    PRIMARY_SUPPLIER_TOTAL_REVERSED_ITC: summary.totalReversedItc,
-    PRIMARY_SUPPLIER_IGST_ITC: summary.igstItc,
-    PRIMARY_SUPPLIER_CGST_ITC: summary.cgstItc,
-    PRIMARY_SUPPLIER_SGST_ITC: summary.sgstItc,
-    PRIMARY_SUPPLIER_CESS_ITC: summary.cessItc,
+    PRIMARY_SUPPLIER_TOTAL_ELIGIBLE_ITC: round2(summary.totalEligibleItc),
+    PRIMARY_SUPPLIER_TOTAL_INELIGIBLE_ITC: round2(summary.totalIneligibleItc),
+    PRIMARY_SUPPLIER_TOTAL_REVERSED_ITC: round2(summary.totalReversedItc),
+    PRIMARY_SUPPLIER_IGST_ITC: round2(summary.igstItc),
+    PRIMARY_SUPPLIER_CGST_ITC: round2(summary.cgstItc),
+    PRIMARY_SUPPLIER_SGST_ITC: round2(summary.sgstItc),
+    PRIMARY_SUPPLIER_CESS_ITC: round2(summary.cessItc),
     PRIMARY_TOTAL_INVOICE_COUNT: summary.totalInvoiceCount,
     PRIMARY_ELIGIBLE_INVOICE_COUNT: summary.eligibleInvoiceCount,
     PRIMARY_INELIGIBLE_INVOICE_COUNT: summary.ineligibleInvoiceCount,
   };
 }
 
-export function computeSecondaryGstr2bAggregationMetrics(
-  records: Array<Gstr2bComplianceRecord | Record<string, any>>,
-): SecondaryGstr2bAggregationMetrics {
-  const summary = computePanSummary(records);
+/**
+ * Per Considered Entity PAN metrics from that PAN's GSTR-2B docs.
+ * Matches the per-entity step in Considered_Supplier_Metrics_Logic.docx.
+ */
+export function computeConsideredEntityPanSupplierMetrics(
+  panRecords: Array<Gstr2bComplianceRecord | Record<string, any>>,
+): ConsideredEntityPanSupplierMetrics {
+  return computePanSummary(panRecords);
+}
+
+/**
+ * Loan-level CONSIDERED_* supplier metrics:
+ *
+ * 1. For each Considered Entity PAN (non-empty), compute entity-level metrics
+ *    from that PAN's GSTR-2B records on the loan.
+ * 2. SUM those entity-level values across all Considered Entity PANs for the
+ *    same associated_loan_id.
+ */
+export function computeLoanLevelConsideredSupplierMetrics(
+  consideredEntityPans: string[],
+  loanGstr2bRecords: Array<Gstr2bComplianceRecord | Record<string, any>>,
+): ConsideredSupplierGstr2bAggregationMetrics {
+  const empty: ConsideredSupplierGstr2bAggregationMetrics = {
+    CONSIDERED_TOTAL_SUPPLIER_COUNT: 0,
+    CONSIDERED_SUPPLIER_TOTAL_INELIGIBLE_ITC: 0,
+    CONSIDERED_SUPPLIER_TOTAL_REVERSED_ITC: 0,
+    CONSIDERED_SUPPLIER_TOTAL_ELIGIBLE_ITC: 0,
+    CONSIDERED_SUPPLIER_TOTAL_INVOICE_COUNT: 0,
+    CONSIDERED_SUPPLIER_ELIGIBLE_INVOICE_COUNT: 0,
+    CONSIDERED_SUPPLIER_INELIGIBLE_INVOICE_COUNT: 0,
+    CONSIDERED_SUPPLIER_IGST_ITC: 0,
+    CONSIDERED_SUPPLIER_CGST_ITC: 0,
+    CONSIDERED_SUPPLIER_SGST_ITC: 0,
+    CONSIDERED_SUPPLIER_CESS_ITC: 0,
+  };
+
+  const pans = Array.from(
+    new Set(
+      consideredEntityPans
+        .map((pan) => normalizePan(pan))
+        .filter((pan): pan is string => Boolean(pan)),
+    ),
+  );
+
+  if (pans.length === 0) {
+    return empty;
+  }
+
+  // Prefer CONSIDERED_ENTITY docs when entityType is present.
+  const consideredScopedRecords = loanGstr2bRecords.filter((record) => {
+    const entityType = String(record.entityType ?? '')
+      .trim()
+      .toUpperCase();
+    return !entityType || entityType === 'CONSIDERED_ENTITY';
+  });
+
+  let totalSupplierCount = 0;
+  let totalIneligibleItc = 0;
+  let totalReversedItc = 0;
+  let totalEligibleItc = 0;
+  let totalInvoiceCount = 0;
+  let eligibleInvoiceCount = 0;
+  let ineligibleInvoiceCount = 0;
+  let igstItc = 0;
+  let cgstItc = 0;
+  let sgstItc = 0;
+  let cessItc = 0;
+
+  for (const pan of pans) {
+    const panRecords = getGstr2bRecordsForPan(consideredScopedRecords, pan);
+    const entityMetrics = computeConsideredEntityPanSupplierMetrics(panRecords);
+
+    // SUM(COUNT(DISTINCT supplier_gstin ...)) across Considered Entity PANs
+    totalSupplierCount += entityMetrics.totalSupplierCount;
+    // SUM(ineligible_itc / reversed_itc / eligible_itc / tax ITCs) across PANs
+    totalIneligibleItc += entityMetrics.totalIneligibleItc;
+    totalReversedItc += entityMetrics.totalReversedItc;
+    totalEligibleItc += entityMetrics.totalEligibleItc;
+    // SUM(COUNT(invoice_number ...)) / eligible / ineligible across PANs
+    totalInvoiceCount += entityMetrics.totalInvoiceCount;
+    eligibleInvoiceCount += entityMetrics.eligibleInvoiceCount;
+    ineligibleInvoiceCount += entityMetrics.ineligibleInvoiceCount;
+    igstItc += entityMetrics.igstItc;
+    cgstItc += entityMetrics.cgstItc;
+    sgstItc += entityMetrics.sgstItc;
+    cessItc += entityMetrics.cessItc;
+  }
+
   return {
-    CONSIDERED_TOTAL_SUPPLIER_COUNT: summary.totalSupplierCount,
-    CONSIDERED_SUPPLIER_TOTAL_INELIGIBLE_ITC: summary.totalIneligibleItc,
-    CONSIDERED_SUPPLIER_TOTAL_REVERSED_ITC: summary.totalReversedItc,
-    CONSIDERED_SUPPLIER_TOTAL_ELIGIBLE_ITC: summary.totalEligibleItc,
-    CONSIDERED_SUPPLIER_TOTAL_INVOICE_COUNT: summary.totalInvoiceCount,
-    CONSIDERED_SUPPLIER_ELIGIBLE_INVOICE_COUNT: summary.eligibleInvoiceCount,
-    CONSIDERED_SUPPLIER_INELIGIBLE_INVOICE_COUNT: summary.ineligibleInvoiceCount,
-    CONSIDERED_SUPPLIER_IGST_ITC: summary.igstItc,
-    CONSIDERED_SUPPLIER_CGST_ITC: summary.cgstItc,
-    CONSIDERED_SUPPLIER_SGST_ITC: summary.sgstItc,
-    CONSIDERED_SUPPLIER_CESS_ITC: summary.cessItc,
+    CONSIDERED_TOTAL_SUPPLIER_COUNT: totalSupplierCount,
+    CONSIDERED_SUPPLIER_TOTAL_INELIGIBLE_ITC: round2(totalIneligibleItc),
+    CONSIDERED_SUPPLIER_TOTAL_REVERSED_ITC: round2(totalReversedItc),
+    CONSIDERED_SUPPLIER_TOTAL_ELIGIBLE_ITC: round2(totalEligibleItc),
+    CONSIDERED_SUPPLIER_TOTAL_INVOICE_COUNT: totalInvoiceCount,
+    CONSIDERED_SUPPLIER_ELIGIBLE_INVOICE_COUNT: eligibleInvoiceCount,
+    CONSIDERED_SUPPLIER_INELIGIBLE_INVOICE_COUNT: ineligibleInvoiceCount,
+    CONSIDERED_SUPPLIER_IGST_ITC: round2(igstItc),
+    CONSIDERED_SUPPLIER_CGST_ITC: round2(cgstItc),
+    CONSIDERED_SUPPLIER_SGST_ITC: round2(sgstItc),
+    CONSIDERED_SUPPLIER_CESS_ITC: round2(cessItc),
   };
 }
 
+/** @deprecated Prefer computeLoanLevelConsideredSupplierMetrics */
+export function computeConsideredGstr2bAggregationMetricsForPans(
+  pans: string[],
+  allRecords: Array<Gstr2bComplianceRecord | Record<string, any>>,
+): ConsideredSupplierGstr2bAggregationMetrics {
+  return computeLoanLevelConsideredSupplierMetrics(pans, allRecords);
+}
+
+/** @deprecated Prefer computeLoanLevelConsideredSupplierMetrics for loan roll-up */
+export function computeSecondaryGstr2bAggregationMetrics(
+  records: Array<Gstr2bComplianceRecord | Record<string, any>>,
+): ConsideredSupplierGstr2bAggregationMetrics {
+  const summary = computePanSummary(records);
+  return {
+    CONSIDERED_TOTAL_SUPPLIER_COUNT: summary.totalSupplierCount,
+    CONSIDERED_SUPPLIER_TOTAL_INELIGIBLE_ITC: round2(summary.totalIneligibleItc),
+    CONSIDERED_SUPPLIER_TOTAL_REVERSED_ITC: round2(summary.totalReversedItc),
+    CONSIDERED_SUPPLIER_TOTAL_ELIGIBLE_ITC: round2(summary.totalEligibleItc),
+    CONSIDERED_SUPPLIER_TOTAL_INVOICE_COUNT: summary.totalInvoiceCount,
+    CONSIDERED_SUPPLIER_ELIGIBLE_INVOICE_COUNT: summary.eligibleInvoiceCount,
+    CONSIDERED_SUPPLIER_INELIGIBLE_INVOICE_COUNT: summary.ineligibleInvoiceCount,
+    CONSIDERED_SUPPLIER_IGST_ITC: round2(summary.igstItc),
+    CONSIDERED_SUPPLIER_CGST_ITC: round2(summary.cgstItc),
+    CONSIDERED_SUPPLIER_SGST_ITC: round2(summary.sgstItc),
+    CONSIDERED_SUPPLIER_CESS_ITC: round2(summary.cessItc),
+  };
+}
+
+/**
+ * Entity/PAN-level supplier metric facts from GSTR-2B invoice payload.
+ * - TOTAL_SUPPLIER_COUNT = COUNT(DISTINCT supplier_gstin)
+ * - invoice counts = COUNT(DISTINCT invoice_number) [, filtered by eligibility]
+ * - ITC amounts = SUM of extracted amount fields
+ */
 function computePanSummary(
   records: Array<Gstr2bComplianceRecord | Record<string, any>>,
-): {
-  totalSupplierCount: number;
-  totalEligibleItc: number;
-  totalIneligibleItc: number;
-  totalReversedItc: number;
-  igstItc: number;
-  cgstItc: number;
-  sgstItc: number;
-  cessItc: number;
-  totalInvoiceCount: number;
-  eligibleInvoiceCount: number;
-  ineligibleInvoiceCount: number;
-} {
+): ConsideredEntityPanSupplierMetrics {
   const facts = records.flatMap((record) =>
     extractInvoiceFacts(record.gstr2bResponse ?? record),
   );
@@ -175,13 +297,17 @@ function computePanSummary(
   let cessItc = 0;
 
   for (const fact of facts) {
-    if (fact.supplierGstin) suppliers.add(fact.supplierGstin);
-    if (fact.invoiceNumber) invoices.add(fact.invoiceNumber);
-    if (fact.invoiceNumber && fact.itcEligibility === 'ELIGIBLE') {
-      eligibleInvoices.add(fact.invoiceNumber);
+    if (fact.supplierGstin) {
+      suppliers.add(fact.supplierGstin);
     }
-    if (fact.invoiceNumber && fact.itcEligibility === 'INELIGIBLE') {
-      ineligibleInvoices.add(fact.invoiceNumber);
+    if (fact.invoiceNumber) {
+      invoices.add(fact.invoiceNumber);
+      if (fact.itcEligibility === 'ELIGIBLE') {
+        eligibleInvoices.add(fact.invoiceNumber);
+      }
+      if (fact.itcEligibility === 'INELIGIBLE') {
+        ineligibleInvoices.add(fact.invoiceNumber);
+      }
     }
 
     totalEligibleItc += fact.eligibleItc;
@@ -195,13 +321,13 @@ function computePanSummary(
 
   return {
     totalSupplierCount: suppliers.size,
-    totalEligibleItc: round2(totalEligibleItc),
-    totalIneligibleItc: round2(totalIneligibleItc),
-    totalReversedItc: round2(totalReversedItc),
-    igstItc: round2(igstItc),
-    cgstItc: round2(cgstItc),
-    sgstItc: round2(sgstItc),
-    cessItc: round2(cessItc),
+    totalEligibleItc,
+    totalIneligibleItc,
+    totalReversedItc,
+    igstItc,
+    cgstItc,
+    sgstItc,
+    cessItc,
     totalInvoiceCount: invoices.size,
     eligibleInvoiceCount: eligibleInvoices.size,
     ineligibleInvoiceCount: ineligibleInvoices.size,

@@ -433,7 +433,7 @@ export class GstController {
       'GSTR-2B',
       'GSTR-3B',
     ]);
-    const allowedStatuses = new Set(['PROCESSING', 'SUCCESS', 'FAILED']);
+    const allowedStatuses = new Set(['PENDING', 'SUCCESS', 'FAILED']);
 
     if (gstrType && !allowedGstrTypes.has(gstrType)) {
       throw new BadRequestException(
@@ -442,7 +442,7 @@ export class GstController {
     }
     if (status && !allowedStatuses.has(status)) {
       throw new BadRequestException(
-        'Invalid status. Allowed values: PROCESSING, SUCCESS, FAILED.',
+        'Invalid status. Allowed values: PENDING, SUCCESS, FAILED.',
       );
     }
     const normalizedStatus = status as ApiRequestStatus | undefined;

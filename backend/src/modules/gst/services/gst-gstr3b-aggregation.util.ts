@@ -131,6 +131,112 @@ export function computeSecondaryGstr3bAggregationMetrics(
   };
 }
 
+/**
+ * Loan-level CONSIDERED_* GSTR-3B metrics (Considered_GST_Metrics_Logic.xlsx):
+ *
+ * 1. For each Considered Entity PAN (non-empty), compute entity-level metrics
+ *    from that PAN's GSTR-3B records on the loan.
+ * 2. SUM those entity-level values across all Considered Entity PANs for the
+ *    same associated_loan_id.
+ */
+export function computeLoanLevelConsideredGstr3bMetrics(
+  consideredEntityPans: string[],
+  loanGstr3bRecords: Array<Gstr3bComplianceRecord | Record<string, any>>,
+): SecondaryGstr3bAggregationMetrics {
+  const empty: SecondaryGstr3bAggregationMetrics = {
+    CONSIDERED_TOTAL_TAXABLE_TURNOVER: 0,
+    CONSIDERED_TOTAL_EXEMPT_TURNOVER: 0,
+    CONSIDERED_TOTAL_REVERSE_CHARGE_SALES: 0,
+    CONSIDERED_TOTAL_PURCHASE_VALUE: 0,
+    CONSIDERED_TOTAL_INTERSTATE_PURCHASES: 0,
+    CONSIDERED_TOTAL_INTRASTATE_PURCHASES: 0,
+    CONSIDERED_TOTAL_NON_GST_PURCHASES: 0,
+    CONSIDERED_TOTAL_ITC_AVAILABLE: 0,
+    CONSIDERED_TOTAL_CGST_ITC: 0,
+    CONSIDERED_TOTAL_SGST_ITC: 0,
+    CONSIDERED_TOTAL_IGST_ITC: 0,
+    CONSIDERED_TOTAL_ITC_REVERSED: 0,
+    CONSIDERED_TOTAL_INELIGIBLE_ITC: 0,
+    CONSIDERED_TOTAL_ITC_UTILISED: 0,
+    CONSIDERED_TOTAL_CGST_ITC_UTILISED: 0,
+    CONSIDERED_TOTAL_SGST_ITC_UTILISED: 0,
+    CONSIDERED_TOTAL_IGST_ITC_UTILISED: 0,
+    CONSIDERED_TOTAL_CASH_TAX_PAID: 0,
+    CONSIDERED_TOTAL_CASH_CGST_PAID: 0,
+    CONSIDERED_TOTAL_CASH_SGST_PAID: 0,
+    CONSIDERED_TOTAL_CASH_IGST_PAID: 0,
+  };
+
+  const pans = Array.from(
+    new Set(
+      consideredEntityPans
+        .map((pan) => normalizePan(pan))
+        .filter((pan): pan is string => Boolean(pan)),
+    ),
+  );
+
+  if (pans.length === 0) {
+    return empty;
+  }
+
+  // Prefer CONSIDERED_ENTITY docs when entityType is present.
+  const consideredScopedRecords = loanGstr3bRecords.filter((record) => {
+    const entityType = String(record.entityType ?? '')
+      .trim()
+      .toUpperCase();
+    return !entityType || entityType === 'CONSIDERED_ENTITY';
+  });
+
+  const totals = { ...empty };
+
+  for (const pan of pans) {
+    const panRecords = getGstr3bRecordsForPan(consideredScopedRecords, pan);
+    const entityMetrics = computeSecondaryGstr3bAggregationMetrics(panRecords);
+
+    totals.CONSIDERED_TOTAL_TAXABLE_TURNOVER +=
+      entityMetrics.CONSIDERED_TOTAL_TAXABLE_TURNOVER;
+    totals.CONSIDERED_TOTAL_EXEMPT_TURNOVER +=
+      entityMetrics.CONSIDERED_TOTAL_EXEMPT_TURNOVER;
+    totals.CONSIDERED_TOTAL_REVERSE_CHARGE_SALES +=
+      entityMetrics.CONSIDERED_TOTAL_REVERSE_CHARGE_SALES;
+    totals.CONSIDERED_TOTAL_PURCHASE_VALUE +=
+      entityMetrics.CONSIDERED_TOTAL_PURCHASE_VALUE;
+    totals.CONSIDERED_TOTAL_INTERSTATE_PURCHASES +=
+      entityMetrics.CONSIDERED_TOTAL_INTERSTATE_PURCHASES;
+    totals.CONSIDERED_TOTAL_INTRASTATE_PURCHASES +=
+      entityMetrics.CONSIDERED_TOTAL_INTRASTATE_PURCHASES;
+    totals.CONSIDERED_TOTAL_NON_GST_PURCHASES +=
+      entityMetrics.CONSIDERED_TOTAL_NON_GST_PURCHASES;
+    totals.CONSIDERED_TOTAL_ITC_AVAILABLE +=
+      entityMetrics.CONSIDERED_TOTAL_ITC_AVAILABLE;
+    totals.CONSIDERED_TOTAL_CGST_ITC += entityMetrics.CONSIDERED_TOTAL_CGST_ITC;
+    totals.CONSIDERED_TOTAL_SGST_ITC += entityMetrics.CONSIDERED_TOTAL_SGST_ITC;
+    totals.CONSIDERED_TOTAL_IGST_ITC += entityMetrics.CONSIDERED_TOTAL_IGST_ITC;
+    totals.CONSIDERED_TOTAL_ITC_REVERSED +=
+      entityMetrics.CONSIDERED_TOTAL_ITC_REVERSED;
+    totals.CONSIDERED_TOTAL_INELIGIBLE_ITC +=
+      entityMetrics.CONSIDERED_TOTAL_INELIGIBLE_ITC;
+    totals.CONSIDERED_TOTAL_ITC_UTILISED +=
+      entityMetrics.CONSIDERED_TOTAL_ITC_UTILISED;
+    totals.CONSIDERED_TOTAL_CGST_ITC_UTILISED +=
+      entityMetrics.CONSIDERED_TOTAL_CGST_ITC_UTILISED;
+    totals.CONSIDERED_TOTAL_SGST_ITC_UTILISED +=
+      entityMetrics.CONSIDERED_TOTAL_SGST_ITC_UTILISED;
+    totals.CONSIDERED_TOTAL_IGST_ITC_UTILISED +=
+      entityMetrics.CONSIDERED_TOTAL_IGST_ITC_UTILISED;
+    totals.CONSIDERED_TOTAL_CASH_TAX_PAID +=
+      entityMetrics.CONSIDERED_TOTAL_CASH_TAX_PAID;
+    totals.CONSIDERED_TOTAL_CASH_CGST_PAID +=
+      entityMetrics.CONSIDERED_TOTAL_CASH_CGST_PAID;
+    totals.CONSIDERED_TOTAL_CASH_SGST_PAID +=
+      entityMetrics.CONSIDERED_TOTAL_CASH_SGST_PAID;
+    totals.CONSIDERED_TOTAL_CASH_IGST_PAID +=
+      entityMetrics.CONSIDERED_TOTAL_CASH_IGST_PAID;
+  }
+
+  return totals;
+}
+
 function computeSummary(
   records: Array<Gstr3bComplianceRecord | Record<string, any>>,
 ): {

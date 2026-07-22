@@ -38,6 +38,10 @@ import {
   Gstr3bComplianceRecord,
   Gstr3bComplianceSchema,
 } from './schemas/gst-gstr3b-compliance.schema';
+import {
+  Gstr1ReturnsComplianceRecord,
+  Gstr1ReturnsComplianceSchema,
+} from './schemas/gst-gstr1-returns-compliance.schema';
 
 const enableRabbitMQ = process.env.ENABLE_RABBITMQ === 'true';
 const enableMongo = process.env.ENABLE_MONGO === 'true';
@@ -60,6 +64,10 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
             { name: GstComplianceRecord.name, schema: GstComplianceSchema },
             { name: Gstr2bComplianceRecord.name, schema: Gstr2bComplianceSchema },
             { name: Gstr3bComplianceRecord.name, schema: Gstr3bComplianceSchema },
+            {
+              name: Gstr1ReturnsComplianceRecord.name,
+              schema: Gstr1ReturnsComplianceSchema,
+            },
           ]),
         ]
         
