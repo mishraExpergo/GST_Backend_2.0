@@ -44,6 +44,18 @@ export interface CustomerGstrStatusSummary {
   GSTR3B: GstrStatusCounts;
 }
 
+export interface ApiRequestLogsBatchItem {
+  loanId?: string;
+  gstin?: string;
+}
+
+export interface PublicComplianceBatchItem {
+  loanId: string;
+  pan?: string;
+  page?: number;
+  limit?: number;
+}
+
 @Injectable()
 export class GstService {
   private readonly logger = new Logger(GstService.name);
@@ -125,16 +137,189 @@ export class GstService {
     }
   }
 
+  async getPublicComplianceDataBatch(requests: PublicComplianceBatchItem[]) {
+    if (!this.mongoConnection) {
+      throw new ServiceUnavailableException('MongoDB not configured.');
+    }
+
+    const normalizedRequests = requests
+      .map((request) => ({
+        loanId: String(request?.loanId ?? '').trim(),
+        pan: String(request?.pan ?? '').trim(),
+        page: request?.page ?? 1,
+        limit: request?.limit ?? 50,
+      }))
+      .filter((request) => request.loanId);
+
+    if (normalizedRequests.length === 0) {
+      throw new BadRequestException('At least one valid loanId is required.');
+    }
+    if (normalizedRequests.length > 1000) {
+      throw new BadRequestException('A maximum of 1000 requests is allowed.');
+    }
+
+    const loanIds = Array.from(
+      new Set(normalizedRequests.map((request) => request.loanId)),
+    );
+
+    try {
+      const data = await this.mongoConnection
+        .collection('gst_compliance_data')
+        .aggregate([
+          { $match: { loanId: { $in: loanIds } } },
+          {
+            $addFields: {
+              _normalizedGstin: {
+                $toUpper: {
+                  $trim: {
+                    input: {
+                      $ifNull: ['$gstin', ''],
+                    },
+                  },
+                },
+              },
+            },
+          },
+          {
+            $lookup: {
+              from: 'gst_return_filing_track',
+              let: { gstin: '$_normalizedGstin' },
+              pipeline: [
+                {
+                  $addFields: {
+                    _normalizedGstin: {
+                      $toUpper: {
+                        $trim: {
+                          input: { $ifNull: ['$gstin', ''] },
+                        },
+                      },
+                    },
+                  },
+                },
+                {
+                  $match: {
+                    $expr: { $eq: ['$_normalizedGstin', '$$gstin'] },
+                  },
+                },
+                { $project: { _normalizedGstin: 0 } },
+              ],
+              as: 'filingHistory',
+            },
+          },
+          { $project: { _normalizedGstin: 0 } },
+        ])
+        .toArray();
+
+      const rowsByLoanId = new Map<string, Record<string, any>[]>();
+      for (const row of data) {
+        const loanId = String(row?.loanId ?? '').trim();
+        if (!rowsByLoanId.has(loanId)) rowsByLoanId.set(loanId, []);
+        rowsByLoanId.get(loanId)!.push(row);
+        }
+      
+      return {
+        items: normalizedRequests.map((params) => {
+          const rows = rowsByLoanId.get(params.loanId) ?? [];
+          return {
+            params,
+            response: {
+              loanId: params.loanId,
+              count: rows.length,
+              data: rows,
+            },
+          };
+        }),
+      };
+    } catch (err) {
+      this.logger.error('Error fetching compliance data batch', err);
+      throw new InternalServerErrorException('Error fetching data');
+    }
+  }
+
+  /**
+   * Reads GSTR-2B and GSTR-3B compliance docs for a customer in parallel,
+   * filtered by the requested years and months.
+   */
+  async getGstr2bAnd3bByCustomer(params: {
+    customerId: string;
+    years: number[];
+    months: number[];
+  }): Promise<{ GST2B: Record<string, any>[]; GST3B: Record<string, any>[] }> {
+    if (!this.mongoConnection) {
+      throw new ServiceUnavailableException('MongoDB not configured.');
+    }
+
+    const customerId = String(params.customerId ?? '').trim();
+    if (!customerId) {
+      throw new BadRequestException('customerId is required.');
+    }
+
+    const years = Array.from(
+      new Set(
+        (params.years ?? []).filter(
+          (y) => Number.isInteger(y) && y >= 2000 && y <= 2100,
+        ),
+      ),
+    );
+    const months = Array.from(
+      new Set(
+        (params.months ?? []).filter(
+          (m) => Number.isInteger(m) && m >= 1 && m <= 12,
+        ),
+      ),
+    );
+
+    if (years.length === 0) {
+      throw new BadRequestException(
+        'At least one valid year (2000–2100) is required.',
+      );
+    }
+    if (months.length === 0) {
+      throw new BadRequestException(
+        'At least one valid month (1–12) is required.',
+      );
+    }
+
+    const filter = {
+      customerId,
+      year: { $in: years },
+      month: { $in: months },
+    };
+
+    try {
+      const [GST2B, GST3B] = await Promise.all([
+        this.mongoConnection
+          .collection('gst_2b_compliance_data')
+          .find(filter)
+          .project({ __v: 0 })
+          .toArray(),
+        this.mongoConnection
+          .collection('gst_3b_compliance_data')
+          .find(filter)
+          .project({ __v: 0 })
+          .toArray(),
+      ]);
+
+      return { GST2B, GST3B };
+    } catch (err) {
+      this.logger.error(
+        `Error fetching GSTR-2B/3B data for customerId=${customerId}`,
+        err,
+      );
+      throw new InternalServerErrorException(
+        'Error fetching GSTR-2B and GSTR-3B data',
+      );
+    }
+  }
+
   async getPrimaryAggregation(loanId: string) {
-    const query =
-      'SELECT * FROM public.primary_gst_aggregation WHERE associated_loan_id = $1';
+    const query = 'SELECT * FROM public.primary_gst_aggregation WHERE associated_loan_id = $1';
     const result = await this.dataSource.query(query, [loanId]);
     return result;
   }
 
   async getSecondaryAggregation(loanId: string) {
-    const query =
-      'SELECT * FROM public.secondary_gst_aggregation WHERE associated_loan_id = $1';
+    const query = 'SELECT * FROM public.secondary_gst_aggregation WHERE associated_loan_id = $1';
     const result = await this.dataSource.query(query, [loanId]);
     return result;
   }
@@ -169,7 +354,7 @@ export class GstService {
       { column_name: string }[]
     >(
       `SELECT column_name FROM information_schema.columns
-     WHERE table_schema = 'public'
+       WHERE table_schema = 'public'
        AND table_name = 'api_request_logs'
        AND column_name IN ('updated_at', 'created_at')`,
     );
@@ -199,6 +384,115 @@ export class GstService {
       count: rows?.length ?? 0,
       lastUpdatedAt,
       data: rows ?? [],
+    };
+  }
+
+  async getApiRequestLogsBatch(requests: ApiRequestLogsBatchItem[]) {
+    const normalizedRequests = requests
+      .map((request) => ({
+        loanId: String(request?.loanId ?? '').trim() || undefined,
+        gstin:
+          String(request?.gstin ?? '').trim().toUpperCase() || undefined,
+      }))
+      .filter((request) => request.loanId || request.gstin);
+
+    if (normalizedRequests.length === 0) {
+      throw new BadRequestException(
+        'At least one valid loanId or gstin is required.',
+      );
+    }
+    if (normalizedRequests.length > 2000) {
+      throw new BadRequestException('A maximum of 2000 requests is allowed.');
+    }
+
+    const uniqueRequests = Array.from(
+      new Map(
+        normalizedRequests.map((request) => [
+          `${request.loanId ?? ''}|${request.gstin ?? ''}`,
+          request,
+        ]),
+      ).values(),
+    );
+    const loanIds = Array.from(
+      new Set(
+        uniqueRequests
+          .map((request) => request.loanId)
+          .filter((value): value is string => Boolean(value)),
+      ),
+    );
+    const gstins = Array.from(
+      new Set(
+        uniqueRequests
+          .map((request) => request.gstin)
+          .filter((value): value is string => Boolean(value)),
+      ),
+    );
+
+    const timestampColumns = await this.dataSource.query<
+      { column_name: string }[]
+    >(
+      `SELECT column_name FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = 'api_request_logs'
+         AND column_name IN ('updated_at', 'created_at')`,
+    );
+    const availableColumns = new Set(
+      (timestampColumns ?? []).map((column) => column.column_name),
+    );
+    const timestampColumn = availableColumns.has('updated_at')
+      ? 'updated_at'
+      : availableColumns.has('created_at')
+        ? 'created_at'
+        : null;
+
+    const conditions: string[] = [];
+    const values: string[][] = [];
+    if (loanIds.length > 0) {
+      values.push(loanIds);
+      conditions.push(
+        `TRIM(associated_loan_id) = ANY($${values.length}::text[])`,
+      );
+    }
+    if (gstins.length > 0) {
+      values.push(gstins);
+      conditions.push(
+        `UPPER(TRIM(gst_number)) = ANY($${values.length}::text[])`,
+      );
+    }
+
+    const rows = await this.dataSource.query(
+      `SELECT * FROM public.api_request_logs
+       WHERE ${conditions.join(' OR ')}
+       ${timestampColumn ? `ORDER BY "${timestampColumn}" DESC NULLS LAST, id DESC` : 'ORDER BY id DESC'}`,
+      values,
+    );
+
+    return {
+      items: uniqueRequests.map((params) => {
+        const matchingRows = (rows ?? []).filter((row: Record<string, any>) => {
+          const loanMatches =
+            Boolean(params.loanId) &&
+            String(row.associated_loan_id ?? '').trim() === params.loanId;
+          const gstinMatches =
+            Boolean(params.gstin) &&
+            String(row.gst_number ?? '').trim().toUpperCase() === params.gstin;
+          return loanMatches || gstinMatches;
+        });
+
+        return {
+          params,
+          response: {
+            loanId: params.loanId ?? null,
+            gstin: params.gstin ?? null,
+            count: matchingRows.length,
+            lastUpdatedAt:
+              timestampColumn && matchingRows.length
+                ? matchingRows[0][timestampColumn]
+                : null,
+            data: matchingRows,
+          },
+        };
+      }),
     };
   }
 
@@ -521,7 +815,7 @@ export class GstService {
   }
 
 
-  // ------------------ Job Tracking Helpers ------------------
+  // -------------------- Job Tracking Helpers ------------------
 
   async createJob(type: JobType, metadata: Record<string, any>): Promise<Job> {
     const job = this.jobRepo.create({

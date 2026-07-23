@@ -74,6 +74,64 @@ export class GstController {
   }
 
   /**
+   * POST /gst/compliance/public/batch
+   * Batch equivalent of GET /gst/compliance/public used by the dashboard.
+   */
+  @Post('compliance/public/batch')
+  @HttpCode(HttpStatus.OK)
+  async getPublicComplianceDataBatch(
+    @Body('requests')
+    requests: Array<{
+      loanId: string;
+      pan?: string;
+      page?: number;
+      limit?: number;
+    }>,
+  ) {
+    if (!Array.isArray(requests)) {
+      throw new BadRequestException('"requests" must be an array.');
+    }
+    return this.gstService.getPublicComplianceDataBatch(requests);
+  }
+
+  /**
+   * GET /gst/compliance/gstr-2b-3b?customerId=...&years=2024,2025&months=1,2,3
+   * Returns stored GSTR-2B and GSTR-3B compliance docs for a customer,
+   * filtered by the given years and months, as { GST2B, GST3B }.
+   */
+  @Get('compliance/gstr-2b-3b')
+  async getGstr2bAnd3bByCustomer(
+    @Query('customerId') customerId?: string,
+    @Query('years') yearsRaw?: string | string[],
+    @Query('months') monthsRaw?: string | string[],
+  ) {
+    const normalizedCustomerId = customerId?.trim();
+    if (!normalizedCustomerId) {
+      throw new BadRequestException('Query parameter "customerId" is required.');
+    }
+
+    const years = this.parseIntList(yearsRaw, 'years');
+    const months = this.parseIntList(monthsRaw, 'months');
+
+    if (years.length === 0) {
+      throw new BadRequestException(
+        'Query parameter "years" is required (e.g. years=2024,2025).',
+      );
+    }
+    if (months.length === 0) {
+      throw new BadRequestException(
+        'Query parameter "months" is required (e.g. months=1,2,3).',
+      );
+    }
+
+    return this.gstService.getGstr2bAnd3bByCustomer({
+      customerId: normalizedCustomerId,
+      years,
+      months,
+    });
+  }
+
+  /**
    * GET /gst/customer-gstr-status-counts
    * Uses customer/loan/GSTIN units from gst_uploaded_file_data and returns
    * per-customer updated, pending, and failed counts from their latest
@@ -110,6 +168,22 @@ export class GstController {
       loanId: normalizedLoanId,
       gstin: normalizedGstin,
     });
+  }
+
+  /**
+   * POST /gst/api-request-logs/batch
+   * Batch equivalent of GET /gst/api-request-logs used by the dashboard.
+   */
+  @Post('api-request-logs/batch')
+  @HttpCode(HttpStatus.OK)
+  async getApiRequestLogsBatch(
+    @Body('requests')
+    requests: Array<{ loanId?: string; gstin?: string }>,
+  ) {
+    if (!Array.isArray(requests)) {
+      throw new BadRequestException('"requests" must be an array.');
+    }
+    return this.gstService.getApiRequestLogsBatch(requests);
   }
 
   /**
@@ -776,5 +850,30 @@ export class GstController {
       );
     }
     return parsed;
+  }
+
+  /** Parses `1,2,3` or repeated query values into unique integers. */
+  private parseIntList(
+    raw: string | string[] | undefined,
+    fieldName: string,
+  ): number[] {
+    if (raw == null) return [];
+
+    const parts = (Array.isArray(raw) ? raw : [raw])
+      .flatMap((value) => String(value).split(','))
+      .map((value) => value.trim())
+      .filter(Boolean);
+
+    const numbers: number[] = [];
+    for (const part of parts) {
+      if (!/^-?\d+$/.test(part)) {
+        throw new BadRequestException(
+          `Query parameter "${fieldName}" must contain integers only.`,
+        );
+      }
+      numbers.push(Number.parseInt(part, 10));
+    }
+
+    return Array.from(new Set(numbers));
   }
 }

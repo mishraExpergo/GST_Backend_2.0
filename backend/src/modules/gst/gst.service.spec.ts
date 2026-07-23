@@ -74,4 +74,61 @@ describe('GstService.getCustomerGstrStatusCounts', () => {
     expect(query.mock.calls[1][0]).toContain('considered_entity_gst_no');
     expect(query.mock.calls[2][0]).toContain('TRIM(associated_loan_id)');
   });
+
+  it('loads loan and GSTIN API-log caches with one batch query', async () => {
+    const rows = [
+      {
+        id: '1',
+        associated_loan_id: 'L1',
+        gst_number: 'GST1',
+        updated_at: '2026-07-17T06:00:00.000Z',
+      },
+      {
+        id: '2',
+        associated_loan_id: 'L2',
+        gst_number: 'GST2',
+        updated_at: '2026-07-17T05:00:00.000Z',
+      },
+    ];
+    const query = jest
+      .fn()
+      .mockResolvedValueOnce([{ column_name: 'updated_at' }])
+      .mockResolvedValueOnce(rows);
+    const service = new GstService(
+      { query } as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+
+    await expect(
+      service.getApiRequestLogsBatch([{ loanId: 'L1' }, { gstin: 'gst2' }]),
+    ).resolves.toEqual({
+      items: [
+        {
+          params: { loanId: 'L1', gstin: undefined },
+          response: {
+            loanId: 'L1',
+            gstin: null,
+            count: 1,
+            lastUpdatedAt: '2026-07-17T06:00:00.000Z',
+            data: [rows[0]],
+          },
+        },
+        {
+          params: { loanId: undefined, gstin: 'GST2' },
+          response: {
+            loanId: null,
+            gstin: 'GST2',
+            count: 1,
+            lastUpdatedAt: '2026-07-17T05:00:00.000Z',
+            data: [rows[1]],
+          },
+        },
+      ],
+    });
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(query.mock.calls[1][0]).toContain('ANY($1::text[])');
+    expect(query.mock.calls[1][0]).toContain('ANY($2::text[])');
+  });
 });
