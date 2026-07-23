@@ -17,7 +17,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ClientProxy } from '@nestjs/microservices';
 import { randomUUID } from 'crypto';
-import { GstService } from './gst.service';
+import { GstService, GST_UPLOAD_TABLE } from './gst.service';
 import { GstComplianceService } from './services/gst-compliance.service';
 import { GstTaxpayerAuthService } from './services/gst-taxpayer-auth.service';
 import { GstTaxpayerReturnsService } from './services/gst-taxpayer-returns.service';
@@ -41,6 +41,183 @@ export class GstController {
     private readonly returnAggregationScheduler: GstReturnAggregationSchedulerService,
     @Optional() @Inject('EXCEL_SERVICE') private readonly excelClient?: ClientProxy,
   ) {}
+
+  /**
+   * GET /gst/data
+   * Returns rows from gst_uploaded_file_data (dashboard).
+   */
+  @Get('data')
+  async getUploadedData(
+    @Query('tableName') tableName = GST_UPLOAD_TABLE,
+    @Query('page') page = '1',
+    @Query('limit') limit = '50',
+  ) {
+    return this.gstService.getTableData(
+      tableName,
+      Number.parseInt(page, 10) || 1,
+      Number.parseInt(limit, 10) || 50,
+    );
+  }
+
+  /**
+   * GET /gst/compliance/public?loanId=...
+   * Returns all GST compliance records for the given loanId from MongoDB.
+   */
+  @Get('compliance/public')
+  async getPublicComplianceData(@Query('loanId') loanId?: string) {
+    const normalizedLoanId = loanId?.trim();
+    if (!normalizedLoanId) {
+      throw new BadRequestException('Query parameter "loanId" is required.');
+    }
+
+    const data = await this.gstService.getPublicComplianceData(normalizedLoanId);
+    console.log(data);
+    return data;
+  }
+
+  /**
+   * POST /gst/compliance/public/batch
+   * Batch equivalent of GET /gst/compliance/public used by the dashboard.
+   */
+  @Post('compliance/public/batch')
+  @HttpCode(HttpStatus.OK)
+  async getPublicComplianceDataBatch(
+    @Body('requests')
+    requests: Array<{
+      loanId: string;
+      pan?: string;
+      page?: number;
+      limit?: number;
+    }>,
+  ) {
+    if (!Array.isArray(requests)) {
+      throw new BadRequestException('"requests" must be an array.');
+    }
+    return this.gstService.getPublicComplianceDataBatch(requests);
+  }
+
+  /**
+   * GET /gst/compliance/gstr-2b-3b?customerId=...&years=2024,2025&months=1,2,3
+   * Returns stored GSTR-2B and GSTR-3B compliance docs for a customer,
+   * filtered by the given years and months, as { GST2B, GST3B }.
+   */
+  @Get('compliance/gstr-2b-3b')
+  async getGstr2bAnd3bByCustomer(
+    @Query('customerId') customerId?: string,
+    @Query('years') yearsRaw?: string | string[],
+    @Query('months') monthsRaw?: string | string[],
+  ) {
+    const normalizedCustomerId = customerId?.trim();
+    if (!normalizedCustomerId) {
+      throw new BadRequestException('Query parameter "customerId" is required.');
+    }
+
+    const years = this.parseIntList(yearsRaw, 'years');
+    const months = this.parseIntList(monthsRaw, 'months');
+
+    if (years.length === 0) {
+      throw new BadRequestException(
+        'Query parameter "years" is required (e.g. years=2024,2025).',
+      );
+    }
+    if (months.length === 0) {
+      throw new BadRequestException(
+        'Query parameter "months" is required (e.g. months=1,2,3).',
+      );
+    }
+
+    return this.gstService.getGstr2bAnd3bByCustomer({
+      customerId: normalizedCustomerId,
+      years,
+      months,
+    });
+  }
+
+  /**
+   * GET /gst/customer-gstr-status-counts
+   * Uses customer/loan/GSTIN units from gst_uploaded_file_data and returns
+   * per-customer updated, pending, and failed counts from their latest
+   * matching API logs for GSTREG1, GSTR1, GSTR2B, and GSTR3B.
+   */
+  @Get('customer-gstr-status-counts')
+  async getCustomerGstrStatusCounts() {
+    return this.gstService.getCustomerGstrStatusCounts();
+  }
+
+  /**
+   * GET /gst/api-request-logs?loanId=...&gstin=...
+   * Returns rows from api_request_logs matching the given loanId and/or
+   * gstin (matched with OR), plus lastUpdatedAt (most recent log timestamp
+   * among the matches). Matching on gstin as well as loanId matters because
+   * some log rows have unreliable/placeholder associated_loan_id values but
+   * a correctly populated gst_number. Used to fill the pending Operational
+   * Status fields (API Name, Data Source, Retry Count, API Status) and the
+   * "Last Updated" shown on Company Summary / Company Details.
+   */
+  @Get('api-request-logs')
+  async getApiRequestLogs(
+    @Query('loanId') loanId?: string,
+    @Query('gstin') gstin?: string,
+  ) {
+    const normalizedLoanId = loanId?.trim();
+    const normalizedGstin = gstin?.trim();
+
+    if (!normalizedLoanId && !normalizedGstin) {
+      throw new BadRequestException('Query parameter "loanId" or "gstin" is required.');
+    }
+
+    return this.gstService.getApiRequestLogs({
+      loanId: normalizedLoanId,
+      gstin: normalizedGstin,
+    });
+  }
+
+  /**
+   * POST /gst/api-request-logs/batch
+   * Batch equivalent of GET /gst/api-request-logs used by the dashboard.
+   */
+  @Post('api-request-logs/batch')
+  @HttpCode(HttpStatus.OK)
+  async getApiRequestLogsBatch(
+    @Body('requests')
+    requests: Array<{ loanId?: string; gstin?: string }>,
+  ) {
+    if (!Array.isArray(requests)) {
+      throw new BadRequestException('"requests" must be an array.');
+    }
+    return this.gstService.getApiRequestLogsBatch(requests);
+  }
+
+  /**
+   * GET /gst/aggregation?loanId=...
+   * Returns the flattened { outputField, output } rows for the Aggregation
+   * Table modal (primary company + every considered/secondary entity for
+   * that loan), read from primary_gst_aggregation / secondary_gst_aggregation.
+   */
+  @Get('aggregation')
+  async getAggregationData(
+    @Query('loanId') loanId: string,
+    @Query('type') type?: string,
+  ) {
+    if (!loanId) {
+      throw new BadRequestException('loanId is required');
+    }
+
+    // Default to primary if not provided, for backwards compatibility
+    const requestedType = type === 'secondary' ? 'secondary' : 'primary';
+
+    // Call the updated service method
+    const result = await this.gstService.getAggregationTable(loanId, requestedType);
+
+    // Format the response to match the AggregationApiResponse interface your frontend expects
+    return {
+      loanId: loanId,
+      count: result.rows.length,
+      data: result.rows,
+      debug: result.debug // Optional: keep for debugging purposes
+    };
+  }
+
 
   /**
    * POST /gst/upload
@@ -586,6 +763,31 @@ export class GstController {
       );
     }
     return parsed;
+  }
+
+  /** Parses `1,2,3` or repeated query values into unique integers. */
+  private parseIntList(
+    raw: string | string[] | undefined,
+    fieldName: string,
+  ): number[] {
+    if (raw == null) return [];
+
+    const parts = (Array.isArray(raw) ? raw : [raw])
+      .flatMap((value) => String(value).split(','))
+      .map((value) => value.trim())
+      .filter(Boolean);
+
+    const numbers: number[] = [];
+    for (const part of parts) {
+      if (!/^-?\d+$/.test(part)) {
+        throw new BadRequestException(
+          `Query parameter "${fieldName}" must contain integers only.`,
+        );
+      }
+      numbers.push(Number.parseInt(part, 10));
+    }
+
+    return Array.from(new Set(numbers));
   }
 }
 

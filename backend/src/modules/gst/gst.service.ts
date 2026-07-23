@@ -1,5 +1,14 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+  Optional,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import { InjectConnection } from '@nestjs/mongoose';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { Connection } from 'mongoose';
 import { DataSource, QueryRunner, Repository } from 'typeorm';
 import * as XLSX from 'xlsx';
 import * as fs from 'fs';
@@ -15,18 +24,798 @@ interface ColumnDef {
   type: PgType;
 }
 
+export const GST_UPLOAD_TABLE = 'gst_uploaded_file_data';
+
+export interface AggregationRow {
+  outputField: string;
+  output: string;
+}
+
+export interface GstrStatusCounts {
+  updated: number;
+  pending: number;
+  failed: number;
+}
+
+export interface CustomerGstrStatusSummary {
+  GSTREG1: GstrStatusCounts;
+  GSTR1: GstrStatusCounts;
+  GSTR2B: GstrStatusCounts;
+  GSTR3B: GstrStatusCounts;
+}
+
+export interface ApiRequestLogsBatchItem {
+  loanId?: string;
+  gstin?: string;
+}
+
+export interface PublicComplianceBatchItem {
+  loanId: string;
+  pan?: string;
+  page?: number;
+  limit?: number;
+}
+
 @Injectable()
 export class GstService {
   private readonly logger = new Logger(GstService.name);
+  private readonly mongoConnection?: Connection;
 
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
     @InjectRepository(Job) private readonly jobRepo: Repository<Job>,
     @InjectRepository(JobTask) private readonly taskRepo: Repository<JobTask>,
     private readonly fileStorageService: FileStorageService,
-  ) {}
+    @Optional() @InjectConnection() mongoConnection?: Connection,
+  ) {
+    this.mongoConnection = mongoConnection;
+  }
 
-  // ------------------ Job Tracking Helpers ------------------
+  // ------------------ Dashboard / read APIs (from feature/getApisAmishaBackend) ------------------
+
+  async getPublicComplianceData(loanId: string) {
+    if (!this.mongoConnection) {
+      throw new ServiceUnavailableException('MongoDB not configured.');
+    }
+
+    try {
+      const data = await this.mongoConnection
+        .collection('gst_compliance_data')
+        .aggregate([
+          { $match: { loanId } },
+          {
+            $addFields: {
+              _normalizedGstin: {
+                $toUpper: {
+                  $trim: {
+                    input: {
+                      $ifNull: ['$gstin', ''],
+                    },
+                  },
+                },
+              },
+            },
+          },
+          {
+            $lookup: {
+              from: 'gst_return_filing_track',
+              let: { gstin: '$_normalizedGstin' },
+              pipeline: [
+                {
+                  $addFields: {
+                    _normalizedGstin: {
+                      $toUpper: {
+                        $trim: {
+                          input: { $ifNull: ['$gstin', ''] },
+                        },
+                      },
+                    },
+                  },
+                },
+                {
+                  $match: {
+                    $expr: { $eq: ['$_normalizedGstin', '$$gstin'] },
+                  },
+                },
+                { $project: { _normalizedGstin: 0 } },
+              ],
+              as: 'filingHistory',
+            },
+          },
+          { $project: { _normalizedGstin: 0 } },
+        ])
+        .toArray();
+
+      return {
+        loanId,
+        count: data.length,
+        data,
+      };
+    } catch (err) {
+      this.logger.error('Error fetching compliance data', err);
+      throw new InternalServerErrorException('Error fetching data');
+    }
+  }
+
+  async getPublicComplianceDataBatch(requests: PublicComplianceBatchItem[]) {
+    if (!this.mongoConnection) {
+      throw new ServiceUnavailableException('MongoDB not configured.');
+    }
+
+    const normalizedRequests = requests
+      .map((request) => ({
+        loanId: String(request?.loanId ?? '').trim(),
+        pan: String(request?.pan ?? '').trim(),
+        page: request?.page ?? 1,
+        limit: request?.limit ?? 50,
+      }))
+      .filter((request) => request.loanId);
+
+    if (normalizedRequests.length === 0) {
+      throw new BadRequestException('At least one valid loanId is required.');
+    }
+    if (normalizedRequests.length > 1000) {
+      throw new BadRequestException('A maximum of 1000 requests is allowed.');
+    }
+
+    const loanIds = Array.from(
+      new Set(normalizedRequests.map((request) => request.loanId)),
+    );
+
+    try {
+      const data = await this.mongoConnection
+        .collection('gst_compliance_data')
+        .aggregate([
+          { $match: { loanId: { $in: loanIds } } },
+          {
+            $addFields: {
+              _normalizedGstin: {
+                $toUpper: {
+                  $trim: {
+                    input: {
+                      $ifNull: ['$gstin', ''],
+                    },
+                  },
+                },
+              },
+            },
+          },
+          {
+            $lookup: {
+              from: 'gst_return_filing_track',
+              let: { gstin: '$_normalizedGstin' },
+              pipeline: [
+                {
+                  $addFields: {
+                    _normalizedGstin: {
+                      $toUpper: {
+                        $trim: {
+                          input: { $ifNull: ['$gstin', ''] },
+                        },
+                      },
+                    },
+                  },
+                },
+                {
+                  $match: {
+                    $expr: { $eq: ['$_normalizedGstin', '$$gstin'] },
+                  },
+                },
+                { $project: { _normalizedGstin: 0 } },
+              ],
+              as: 'filingHistory',
+            },
+          },
+          { $project: { _normalizedGstin: 0 } },
+        ])
+        .toArray();
+
+      const rowsByLoanId = new Map<string, Record<string, any>[]>();
+      for (const row of data) {
+        const loanId = String(row?.loanId ?? '').trim();
+        if (!rowsByLoanId.has(loanId)) rowsByLoanId.set(loanId, []);
+        rowsByLoanId.get(loanId)!.push(row);
+        }
+      
+      return {
+        items: normalizedRequests.map((params) => {
+          const rows = rowsByLoanId.get(params.loanId) ?? [];
+          return {
+            params,
+            response: {
+              loanId: params.loanId,
+              count: rows.length,
+              data: rows,
+            },
+          };
+        }),
+      };
+    } catch (err) {
+      this.logger.error('Error fetching compliance data batch', err);
+      throw new InternalServerErrorException('Error fetching data');
+    }
+  }
+
+  /**
+   * Reads GSTR-2B and GSTR-3B compliance docs for a customer in parallel,
+   * filtered by the requested years and months.
+   */
+  async getGstr2bAnd3bByCustomer(params: {
+    customerId: string;
+    years: number[];
+    months: number[];
+  }): Promise<{ GST2B: Record<string, any>[]; GST3B: Record<string, any>[] }> {
+    if (!this.mongoConnection) {
+      throw new ServiceUnavailableException('MongoDB not configured.');
+    }
+
+    const customerId = String(params.customerId ?? '').trim();
+    if (!customerId) {
+      throw new BadRequestException('customerId is required.');
+    }
+
+    const years = Array.from(
+      new Set(
+        (params.years ?? []).filter(
+          (y) => Number.isInteger(y) && y >= 2000 && y <= 2100,
+        ),
+      ),
+    );
+    const months = Array.from(
+      new Set(
+        (params.months ?? []).filter(
+          (m) => Number.isInteger(m) && m >= 1 && m <= 12,
+        ),
+      ),
+    );
+
+    if (years.length === 0) {
+      throw new BadRequestException(
+        'At least one valid year (2000–2100) is required.',
+      );
+    }
+    if (months.length === 0) {
+      throw new BadRequestException(
+        'At least one valid month (1–12) is required.',
+      );
+    }
+
+    const filter = {
+      customerId,
+      year: { $in: years },
+      month: { $in: months },
+    };
+
+    try {
+      const [GST2B, GST3B] = await Promise.all([
+        this.mongoConnection
+          .collection('gst_2b_compliance_data')
+          .find(filter)
+          .project({ __v: 0 })
+          .toArray(),
+        this.mongoConnection
+          .collection('gst_3b_compliance_data')
+          .find(filter)
+          .project({ __v: 0 })
+          .toArray(),
+      ]);
+
+      return { GST2B, GST3B };
+    } catch (err) {
+      this.logger.error(
+        `Error fetching GSTR-2B/3B data for customerId=${customerId}`,
+        err,
+      );
+      throw new InternalServerErrorException(
+        'Error fetching GSTR-2B and GSTR-3B data',
+      );
+    }
+  }
+
+  async getPrimaryAggregation(loanId: string) {
+    const query = 'SELECT * FROM public.primary_gst_aggregation WHERE associated_loan_id = $1';
+    const result = await this.dataSource.query(query, [loanId]);
+    return result;
+  }
+
+  async getSecondaryAggregation(loanId: string) {
+    const query = 'SELECT * FROM public.secondary_gst_aggregation WHERE associated_loan_id = $1';
+    const result = await this.dataSource.query(query, [loanId]);
+    return result;
+  }
+
+  /**
+   * Backs GET /gst/api-request-logs?loanId=...
+   */
+  async getApiRequestLogs(params: { loanId?: string; gstin?: string }) {
+    const loanId = params.loanId?.trim();
+    const gstin = params.gstin?.trim();
+
+    if (!loanId && !gstin) {
+      throw new BadRequestException('loanId or gstin is required.');
+    }
+
+    const conditions: string[] = [];
+    const values: string[] = [];
+
+    if (loanId) {
+      values.push(loanId);
+      conditions.push(`TRIM(associated_loan_id) = TRIM($${values.length})`);
+    }
+
+    if (gstin) {
+      values.push(gstin);
+      conditions.push(
+        `UPPER(TRIM(gst_number)) = UPPER(TRIM($${values.length}))`,
+      );
+    }
+
+    const timestampColumns = await this.dataSource.query<
+      { column_name: string }[]
+    >(
+      `SELECT column_name FROM information_schema.columns
+       WHERE table_schema = 'public'
+       AND table_name = 'api_request_logs'
+       AND column_name IN ('updated_at', 'created_at')`,
+    );
+
+    const availableColumns = new Set(
+      (timestampColumns ?? []).map((c) => c.column_name),
+    );
+    const timestampColumn = availableColumns.has('updated_at')
+      ? 'updated_at'
+      : availableColumns.has('created_at')
+        ? 'created_at'
+        : null;
+
+    const rows = await this.dataSource.query(
+      `SELECT * FROM public.api_request_logs
+     WHERE ${conditions.join(' OR ')}
+     ${timestampColumn ? `ORDER BY "${timestampColumn}" DESC` : 'ORDER BY id DESC'}`,
+      values,
+    );
+
+    const lastUpdatedAt =
+      timestampColumn && rows?.length ? rows[0][timestampColumn] : null;
+
+    return {
+      loanId: loanId ?? null,
+      gstin: gstin ?? null,
+      count: rows?.length ?? 0,
+      lastUpdatedAt,
+      data: rows ?? [],
+    };
+  }
+
+  async getApiRequestLogsBatch(requests: ApiRequestLogsBatchItem[]) {
+    const normalizedRequests = requests
+      .map((request) => ({
+        loanId: String(request?.loanId ?? '').trim() || undefined,
+        gstin:
+          String(request?.gstin ?? '').trim().toUpperCase() || undefined,
+      }))
+      .filter((request) => request.loanId || request.gstin);
+
+    if (normalizedRequests.length === 0) {
+      throw new BadRequestException(
+        'At least one valid loanId or gstin is required.',
+      );
+    }
+    if (normalizedRequests.length > 2000) {
+      throw new BadRequestException('A maximum of 2000 requests is allowed.');
+    }
+
+    const uniqueRequests = Array.from(
+      new Map(
+        normalizedRequests.map((request) => [
+          `${request.loanId ?? ''}|${request.gstin ?? ''}`,
+          request,
+        ]),
+      ).values(),
+    );
+    const loanIds = Array.from(
+      new Set(
+        uniqueRequests
+          .map((request) => request.loanId)
+          .filter((value): value is string => Boolean(value)),
+      ),
+    );
+    const gstins = Array.from(
+      new Set(
+        uniqueRequests
+          .map((request) => request.gstin)
+          .filter((value): value is string => Boolean(value)),
+      ),
+    );
+
+    const timestampColumns = await this.dataSource.query<
+      { column_name: string }[]
+    >(
+      `SELECT column_name FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = 'api_request_logs'
+         AND column_name IN ('updated_at', 'created_at')`,
+    );
+    const availableColumns = new Set(
+      (timestampColumns ?? []).map((column) => column.column_name),
+    );
+    const timestampColumn = availableColumns.has('updated_at')
+      ? 'updated_at'
+      : availableColumns.has('created_at')
+        ? 'created_at'
+        : null;
+
+    const conditions: string[] = [];
+    const values: string[][] = [];
+    if (loanIds.length > 0) {
+      values.push(loanIds);
+      conditions.push(
+        `TRIM(associated_loan_id) = ANY($${values.length}::text[])`,
+      );
+    }
+    if (gstins.length > 0) {
+      values.push(gstins);
+      conditions.push(
+        `UPPER(TRIM(gst_number)) = ANY($${values.length}::text[])`,
+      );
+    }
+
+    const rows = await this.dataSource.query(
+      `SELECT * FROM public.api_request_logs
+       WHERE ${conditions.join(' OR ')}
+       ${timestampColumn ? `ORDER BY "${timestampColumn}" DESC NULLS LAST, id DESC` : 'ORDER BY id DESC'}`,
+      values,
+    );
+
+    return {
+      items: uniqueRequests.map((params) => {
+        const matchingRows = (rows ?? []).filter((row: Record<string, any>) => {
+          const loanMatches =
+            Boolean(params.loanId) &&
+            String(row.associated_loan_id ?? '').trim() === params.loanId;
+          const gstinMatches =
+            Boolean(params.gstin) &&
+            String(row.gst_number ?? '').trim().toUpperCase() === params.gstin;
+          return loanMatches || gstinMatches;
+        });
+
+        return {
+          params,
+          response: {
+            loanId: params.loanId ?? null,
+            gstin: params.gstin ?? null,
+            count: matchingRows.length,
+            lastUpdatedAt:
+              timestampColumn && matchingRows.length
+                ? matchingRows[0][timestampColumn]
+                : null,
+            data: matchingRows,
+          },
+        };
+      }),
+    };
+  }
+
+  /**
+   * Backs GET /gst/customer-gstr-status-counts
+   */
+  async getCustomerGstrStatusCounts(): Promise<
+    Record<string, CustomerGstrStatusSummary>
+  > {
+    const timestampColumns = await this.dataSource.query<
+      { column_name: string }[]
+    >(
+      `SELECT column_name FROM information_schema.columns
+     WHERE table_schema = 'public'
+       AND table_name = 'api_request_logs'
+       AND column_name IN ('updated_at', 'created_at')`,
+    );
+
+    const availableColumns = new Set(
+      (timestampColumns ?? []).map((c) => c.column_name),
+    );
+    const timestampColumn = availableColumns.has('updated_at')
+      ? 'updated_at'
+      : availableColumns.has('created_at')
+        ? 'created_at'
+        : 'id';
+
+    const uploadedUnits = await this.dataSource.query<
+      { customer_id: string; loan_id: string; gst_number: string }[]
+    >(
+      `SELECT DISTINCT
+       TRIM(customer_id) AS customer_id,
+       TRIM(associated_loan_id) AS loan_id,
+       UPPER(TRIM(gst_number)) AS gst_number
+     FROM (
+       SELECT customer_id, associated_loan_id, primary_gst_no AS gst_number
+       FROM public."${GST_UPLOAD_TABLE}"
+       UNION
+       SELECT customer_id, associated_loan_id, considered_entity_gst_no AS gst_number
+       FROM public."${GST_UPLOAD_TABLE}"
+     ) uploaded
+     WHERE customer_id IS NOT NULL
+       AND TRIM(customer_id) <> ''
+       AND associated_loan_id IS NOT NULL
+       AND TRIM(associated_loan_id) <> ''
+       AND gst_number IS NOT NULL
+       AND TRIM(gst_number) <> ''`,
+    );
+
+    const latestLogs = await this.dataSource.query<
+      {
+        customer_id: string;
+        loan_id: string;
+        gst_number: string;
+        gstr_type: string;
+        status: string;
+      }[]
+    >(
+      `SELECT DISTINCT ON (
+       TRIM(customer_id),
+       TRIM(associated_loan_id),
+       UPPER(TRIM(gst_number)),
+       UPPER(TRIM(gstr_type))
+     )
+       TRIM(customer_id) AS customer_id,
+       TRIM(associated_loan_id) AS loan_id,
+       UPPER(TRIM(gst_number)) AS gst_number,
+       UPPER(TRIM(gstr_type)) AS gstr_type,
+       UPPER(TRIM(status)) AS status
+     FROM public.api_request_logs
+     WHERE customer_id IS NOT NULL
+       AND TRIM(customer_id) <> ''
+       AND associated_loan_id IS NOT NULL
+       AND TRIM(associated_loan_id) <> ''
+       AND gst_number IS NOT NULL
+       AND TRIM(gst_number) <> ''
+       AND UPPER(TRIM(gstr_type)) IN ('GSTR-1', 'GSTR-2B', 'GSTR-3B', 'GSTREG-1', 'GSTREG1')
+     ORDER BY
+       TRIM(customer_id),
+       TRIM(associated_loan_id),
+       UPPER(TRIM(gst_number)),
+       UPPER(TRIM(gstr_type)),
+       "${timestampColumn}" DESC NULLS LAST,
+       id DESC`,
+    );
+
+    const gstrTypeMap: Record<string, keyof CustomerGstrStatusSummary> = {
+      'GSTR-1': 'GSTR1',
+      'GSTR-2B': 'GSTR2B',
+      'GSTR-3B': 'GSTR3B',
+      'GSTREG-1': 'GSTREG1',
+      'GSTREG1': 'GSTREG1',
+    };
+
+    const createEmptyCounts = (): GstrStatusCounts => ({
+      updated: 0,
+      pending: 0,
+      failed: 0,
+    });
+
+    const createEmptySummary = (): CustomerGstrStatusSummary => ({
+      GSTREG1: createEmptyCounts(),
+      GSTR1: createEmptyCounts(),
+      GSTR2B: createEmptyCounts(),
+      GSTR3B: createEmptyCounts(),
+    });
+
+    const unitsByCustomer = new Map<
+      string,
+      Array<{ loanId: string; gstNumber: string }>
+    >();
+    for (const row of uploadedUnits ?? []) {
+      if (!unitsByCustomer.has(row.customer_id)) {
+        unitsByCustomer.set(row.customer_id, []);
+      }
+      unitsByCustomer.get(row.customer_id)!.push({
+        loanId: row.loan_id,
+        gstNumber: row.gst_number,
+      });
+    }
+
+    const statusByCustomerLoanGstinType = new Map<string, string>();
+    for (const row of latestLogs ?? []) {
+      const summaryKey = gstrTypeMap[row.gstr_type];
+      if (!summaryKey) continue;
+      statusByCustomerLoanGstinType.set(
+        `${row.customer_id}|${row.loan_id}|${row.gst_number}|${summaryKey}`,
+        row.status,
+      );
+    }
+
+    const result: Record<string, CustomerGstrStatusSummary> = {};
+
+    for (const [customerId, units] of unitsByCustomer) {
+      const summary = createEmptySummary();
+
+      for (const gstrKey of ['GSTREG1', 'GSTR1', 'GSTR2B', 'GSTR3B'] as const) {
+        for (const unit of units) {
+          const status = statusByCustomerLoanGstinType.get(
+            `${customerId}|${unit.loanId}|${unit.gstNumber}|${gstrKey}`,
+          );
+
+          if (!status) {
+            summary[gstrKey].pending += 1;
+          } else if (status === 'SUCCESS') {
+            summary[gstrKey].updated += 1;
+          } else if (status === 'FAILED') {
+            summary[gstrKey].failed += 1;
+          } else {
+            summary[gstrKey].pending += 1;
+          }
+        }
+      }
+
+      result[customerId] = summary;
+    }
+
+    return result;
+  }
+
+  async getAggregationTable(
+    loanId: string,
+    type: 'primary' | 'secondary' = 'primary',
+  ): Promise<{ rows: AggregationRow[]; debug: Record<string, unknown> }> {
+    const trimmedLoanId = loanId?.trim();
+
+    if (!trimmedLoanId) {
+      throw new BadRequestException('loanId is required.');
+    }
+
+    const debug: Record<string, unknown> = {
+      receivedLoanId: trimmedLoanId,
+      requestedType: type,
+    };
+
+    let rows: any[] = [];
+
+    if (type === 'primary') {
+      rows = await this.dataSource.query(
+        'SELECT * FROM public.primary_gst_aggregation WHERE TRIM(associated_loan_id) = TRIM($1)',
+        [trimmedLoanId],
+      );
+      debug.source = 'primary_gst_aggregation';
+    } else {
+      rows = await this.dataSource.query(
+        'SELECT * FROM public.secondary_gst_aggregation WHERE TRIM(associated_loan_id) = TRIM($1)',
+        [trimmedLoanId],
+      );
+      debug.source = 'secondary_gst_aggregation';
+    }
+
+    debug.rowCount = rows?.length ?? 0;
+
+    const result: AggregationRow[] = [];
+    const hasMultipleRows = (rows ?? []).length > 1;
+
+    for (const row of rows ?? []) {
+      const parsed = this.parseAggregationVariable(row.aggregation_variable);
+
+      for (const [key, value] of Object.entries(parsed)) {
+        const outputField =
+          type === 'secondary' && hasMultipleRows && row.customer_id
+            ? `${key} (${row.customer_id})`
+            : key;
+
+        result.push({
+          outputField,
+          output: this.formatOutputValue(value),
+        });
+      }
+    }
+
+    debug.parsedEntryCount = result.length;
+
+    return { rows: result, debug };
+  }
+
+  private formatOutputValue(value: unknown): string {
+    if (value === null || value === undefined) return '—';
+    if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+    if (typeof value === 'object') {
+      try {
+        return JSON.stringify(value);
+      } catch {
+        return String(value);
+      }
+    }
+    return String(value);
+  }
+
+  private parseAggregationVariable(raw: unknown): Record<string, unknown> {
+    if (raw === null || raw === undefined) return {};
+
+    if (typeof raw === 'object') {
+      return raw as Record<string, unknown>;
+    }
+
+    const str = String(raw).trim();
+    if (!str || str === '{}') return {};
+
+    const jsonLike = str
+      .replace(/'/g, '"')
+      .replace(/\bNone\b/g, 'null')
+      .replace(/\bTrue\b/g, 'true')
+      .replace(/\bFalse\b/g, 'false');
+
+    try {
+      const parsed = JSON.parse(jsonLike);
+      return typeof parsed === 'object' && parsed !== null ? parsed : {};
+    } catch {
+      this.logger.warn(
+        `Failed to parse aggregation_variable as JSON. Raw (first 200 chars): ${str.slice(0, 200)}`,
+      );
+      return {};
+    }
+  }
+
+  async getTableData(rawTableName: string, page = 1, limit = 50) {
+    const tableName = this.sanitizeIdentifier(rawTableName);
+    const safePage = Math.max(1, page);
+    const safeLimit = Math.min(Math.max(1, limit), 500);
+    const offset = (safePage - 1) * safeLimit;
+
+    const exists = await this.dataSource.query<{ exists: boolean }[]>(
+      `SELECT EXISTS (
+         SELECT 1 FROM information_schema.tables
+         WHERE table_schema = 'public' AND table_name = $1
+       ) AS "exists"`,
+      [tableName],
+    );
+
+    if (!exists[0]?.exists) {
+      return {
+        table: tableName,
+        total: 0,
+        page: safePage,
+        limit: safeLimit,
+        data: [],
+      };
+    }
+
+    try {
+      const countResult = await this.dataSource.query<{ total: number }[]>(
+        `SELECT COUNT(*)::int AS total FROM "${tableName}"`,
+      );
+      const total = countResult[0]?.total ?? 0;
+
+      const rows = await this.dataSource.query(
+        `SELECT * FROM "${tableName}" ORDER BY id ASC LIMIT $1 OFFSET $2`,
+        [safeLimit, offset],
+      );
+
+      return {
+        table: tableName,
+        total,
+        page: safePage,
+        limit: safeLimit,
+        data: rows,
+      };
+    } catch (err) {
+      this.logger.error(
+        `Failed to fetch data from "${tableName}"`,
+        err as Error,
+      );
+      throw new InternalServerErrorException(
+        `Failed to fetch data: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  getDebugConnectionInfo() {
+    const opts = this.dataSource.options as any;
+    return {
+      type: opts.type,
+      database: opts.database,
+      host: opts.host,
+      port: opts.port,
+      schema: opts.schema ?? 'public',
+    };
+  }
+
+
+  // -------------------- Job Tracking Helpers ------------------
 
   async createJob(type: JobType, metadata: Record<string, any>): Promise<Job> {
     const job = this.jobRepo.create({
