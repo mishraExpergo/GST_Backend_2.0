@@ -1,3 +1,5 @@
+import 'dotenv/config';
+import './dns-preflight';
 import * as dns from 'node:dns';
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
@@ -66,6 +68,7 @@ async function bootstrap() {
   const enableRabbitMQ = await resolveRabbitMQMode(logger);
 
   const app = await NestFactory.create(AppModule);
+  app.enableCors({ origin: true });
   // app.useGlobalInterceptors(new HttpLoggingInterceptor());
 
   if (enableRabbitMQ) {

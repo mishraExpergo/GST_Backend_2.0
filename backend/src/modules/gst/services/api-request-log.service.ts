@@ -297,6 +297,24 @@ export class ApiRequestLogService implements OnModuleInit {
         updated_at timestamptz NOT NULL DEFAULT now()
       )
     `);
+    await this.dataSource.query(`
+      CREATE INDEX IF NOT EXISTS idx_api_request_logs_loan_updated
+      ON api_request_logs (TRIM(associated_loan_id), updated_at DESC)
+    `);
+    await this.dataSource.query(`
+      CREATE INDEX IF NOT EXISTS idx_api_request_logs_gstin_updated
+      ON api_request_logs (UPPER(TRIM(gst_number)), updated_at DESC)
+    `);
+    await this.dataSource.query(`
+      CREATE INDEX IF NOT EXISTS idx_api_request_logs_status_summary
+      ON api_request_logs (
+        TRIM(customer_id),
+        TRIM(associated_loan_id),
+        UPPER(TRIM(gst_number)),
+        UPPER(TRIM(gstr_type)),
+        updated_at DESC
+      )
+    `);
   }
 
   private normalizeNullableText(value: unknown): string | null {
