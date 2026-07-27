@@ -56,10 +56,36 @@ export class GstApiService {
     return this.authedPost<Record<string, any>>(url, { gstin });
   }
 
-  /** POST /gst/compliance/public/gstrs/track */
-  async trackGstrReturns(gstin: string): Promise<Record<string, any>> {
-    const url = `${this.baseUrl}/gst/compliance/public/gstrs/track`;
+  /**
+   * POST /gst/compliance/public/gstrs/track
+   * Sandbox expects optional query params:
+   *   gstr=gstr-1, financial_year=FY YYYY-YY
+   */
+  async trackGstrReturns(
+    gstin: string,
+    financialYear?: string,
+    gstrType = 'gstr-1',
+  ): Promise<Record<string, any>> {
+    const params = new URLSearchParams({ gstr: gstrType });
+    if (financialYear) {
+      params.set(
+        'financial_year',
+        this.formatSandboxFinancialYear(financialYear),
+      );
+    }
+    const url = `${this.baseUrl}/gst/compliance/public/gstrs/track?${params.toString()}`;
     return this.authedPost<Record<string, any>>(url, { gstin });
+  }
+
+  /** Sandbox track API requires "FY YYYY-YY" (e.g. "FY 2023-24"). */
+  formatSandboxFinancialYear(financialYear: string): string {
+    const match = financialYear.trim().match(/^(?:FY\s*)?(\d{4}-\d{2})$/i);
+    if (!match) {
+      throw new Error(
+        `Invalid financial year "${financialYear}". Expected "YYYY-YY" or "FY YYYY-YY".`,
+      );
+    }
+    return `FY ${match[1]}`;
   }
 
   /**

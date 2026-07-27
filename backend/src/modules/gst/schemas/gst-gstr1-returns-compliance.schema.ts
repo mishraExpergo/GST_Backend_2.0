@@ -37,6 +37,10 @@ export class Gstr1ReturnsComplianceRecord {
   @Prop()
   status: string;
 
+  /** Sandbox financial year, e.g. "FY 2021-22". */
+  @Prop({ index: true })
+  financialYear: string;
+
   @Prop()
   returnType: string;
 
@@ -54,6 +58,10 @@ export const Gstr1ReturnsComplianceSchema = SchemaFactory.createForClass(
   Gstr1ReturnsComplianceRecord,
 );
 
-Gstr1ReturnsComplianceSchema.index({ loanId: 1, gstin: 1 }, { unique: true });
+Gstr1ReturnsComplianceSchema.index(
+  { loanId: 1, gstin: 1, financialYear: 1 },
+  { unique: true },
+);
 Gstr1ReturnsComplianceSchema.index({ pan: 1, customerId: 1 });
 Gstr1ReturnsComplianceSchema.index({ customerId: 1, loanId: 1 });
+Gstr1ReturnsComplianceSchema.index({ gstin: 1, financialYear: 1 });

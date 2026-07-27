@@ -24,6 +24,7 @@ import {
   preserveMetricKeys,
   PRIMARY_GST_COMPLIANCE_METRIC_KEYS,
   CONSIDERED_GST_COMPLIANCE_METRIC_KEYS,
+  PRIMARY_GSTR_TRACK_METRIC_KEYS,
   CONSIDERED_GSTR_TRACK_METRIC_KEYS,
   CONSIDERED_GSTR2B_SUPPLIER_METRIC_KEYS,
   CONSIDERED_GSTR3B_METRIC_KEYS,
@@ -41,6 +42,7 @@ import {
   normalizePan as normalizePanFrom3bUtil,
 } from './gst-gstr3b-aggregation.util';
 import {
+  computePrimaryGstrTrackAggregationMetricsForPans,
   computeConsideredGstrTrackAggregationMetricsForPans,
 } from './gst-gstr-track-aggregation.util';
 import { GstAggregationHistoryService } from './gst-aggregation-history.service';
@@ -771,8 +773,9 @@ export class GstAggregationService {
   }
 
   /**
-   * Called when a gstr-track job finishes. Merges CONSIDERED_* return-period
-   * metrics into secondary_gst_aggregation (loan-scoped SUM of per-PAN counts).
+   * Called when a gstr-track job finishes. Merges PRIMARY_* / CONSIDERED_*
+   * return-period metrics into primary_gst_aggregation / secondary_gst_aggregation
+   * (loan-scoped SUM of per-PAN counts).
    */
   async triggerAfterGstrTrackJob(jobId: string): Promise<void> {
     if (!this.gstrTrackComplianceModel) {
@@ -815,8 +818,8 @@ export class GstAggregationService {
   }
 
   /**
-   * Loan-level CONSIDERED_* return-period metrics for verify-and-fetch/gstr-track:
-   * SUM(per Considered Entity PAN counts) GROUP BY associated_loan_id.
+   * Loan-level PRIMARY_* + CONSIDERED_* return-period metrics for
+   * verify-and-fetch/gstr-track: SUM(per PAN counts) GROUP BY associated_loan_id.
    */
   async runGstrTrackAggregationForCustomer(
     customerId: string,
@@ -834,6 +837,16 @@ export class GstAggregationService {
       return;
     }
 
+    const existingPrimaryRows = await this.primaryAggRepo.find({
+      where: { customerId },
+    });
+    const existingPrimaryByLoan = new Map<string, PrimaryGstAggregation>();
+    for (const row of existingPrimaryRows) {
+      if (row.associatedLoanId) {
+        existingPrimaryByLoan.set(row.associatedLoanId, row);
+      }
+    }
+
     const existingSecondaryRows = await this.secondaryAggRepo.find({
       where: { customerId },
     });
@@ -849,20 +862,50 @@ export class GstAggregationService {
       .lean()
       .exec();
 
+    const primaryRowsToSave: Partial<PrimaryGstAggregation>[] = [];
     const secondaryRowsToSave: Partial<SecondaryGstAggregation>[] = [];
 
     for (const [loanId, loanUploadRows] of this.groupUploadRowsByLoan(
       uploadRows,
     )) {
+      const loanTrackRecords = trackRecords.filter(
+        (record) => String(record.loanId ?? '').trim() === loanId,
+      );
+
+      const primaryPans =
+        this.collectDistinctPrimaryPansForLoan(loanUploadRows);
+      if (primaryPans.length > 0) {
+        const primaryMetrics =
+          computePrimaryGstrTrackAggregationMetricsForPans(
+            primaryPans,
+            loanTrackRecords as Array<Record<string, any>>,
+          );
+
+        const existingPrimary = existingPrimaryByLoan.get(loanId) ?? null;
+        const mergedPrimaryJson = mergeAggregationVariable(
+          existingPrimary?.aggregationVariable ?? null,
+          {
+            ...preserveMetricKeys(
+              existingPrimary?.aggregationVariable ?? null,
+              PRIMARY_GSTR_TRACK_METRIC_KEYS,
+            ),
+            ...(primaryMetrics as unknown as Record<string, unknown>),
+          },
+        );
+
+        primaryRowsToSave.push({
+          ...(existingPrimary?.id ? { id: existingPrimary.id } : {}),
+          customerId,
+          associatedLoanId: loanId,
+          aggregationVariable: mergedPrimaryJson,
+        });
+      }
+
       const consideredPans =
         this.collectDistinctConsideredPansForLoan(loanUploadRows);
       if (consideredPans.length === 0) {
         continue;
       }
-
-      const loanTrackRecords = trackRecords.filter(
-        (record) => String(record.loanId ?? '').trim() === loanId,
-      );
 
       const metrics = computeConsideredGstrTrackAggregationMetricsForPans(
         consideredPans,
@@ -889,8 +932,19 @@ export class GstAggregationService {
       });
     }
 
+    const dedupedPrimaryRows =
+      this.dedupePrimaryRowsByLoanId(primaryRowsToSave);
     const dedupedSecondaryRows =
       this.dedupeSecondaryRowsByLoanId(secondaryRowsToSave);
+
+    if (dedupedPrimaryRows.length > 0) {
+      await this.aggregationHistoryService.upsertPrimaryAggregation(
+        this.primaryAggRepo,
+        dedupedPrimaryRows,
+        existingPrimaryByLoan,
+        HISTORY_SOURCE_GSTR_TRACK,
+      );
+    }
 
     if (dedupedSecondaryRows.length > 0) {
       await this.aggregationHistoryService.upsertSecondaryAggregation(
@@ -902,7 +956,7 @@ export class GstAggregationService {
     }
 
     this.logger.log(
-      `customerId=${customerId}: merged GSTR track metrics into ${dedupedSecondaryRows.length} secondary aggregation row(s).`,
+      `customerId=${customerId}: merged GSTR track metrics into ${dedupedPrimaryRows.length} primary and ${dedupedSecondaryRows.length} secondary aggregation row(s).`,
     );
   }
 
@@ -1703,6 +1757,17 @@ export class GstAggregationService {
 
   private filterUploadRowsWithConsideredPan(loanRows: UploadRow[]): UploadRow[] {
     return loanRows.filter((row) => this.normalizePan(row.considered_entity_pan));
+  }
+
+  private collectDistinctPrimaryPansForLoan(loanRows: UploadRow[]): string[] {
+    const pans = new Set<string>();
+    for (const row of loanRows) {
+      const pan = this.normalizePan(row.primary_pan);
+      if (pan) {
+        pans.add(pan);
+      }
+    }
+    return Array.from(pans);
   }
 
   private collectDistinctConsideredPansForLoan(loanRows: UploadRow[]): string[] {

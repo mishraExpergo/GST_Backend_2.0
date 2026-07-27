@@ -1,3 +1,11 @@
+export interface PrimaryGstrTrackAggregationMetrics {
+  PRIMARY_TOTAL_RETURN_PERIODS: number;
+  PRIMARY_FILED_RETURN_COUNT: number;
+  PRIMARY_NON_FILED_RETURN_COUNT: number;
+  PRIMARY_DELAYED_RETURN_COUNT: number;
+  PRIMARY_ONTIME_RETURN_COUNT: number;
+}
+
 export interface ConsideredGstrTrackAggregationMetrics {
   CONSIDERED_TOTAL_RETURN_PERIODS: number;
   CONSIDERED_FILED_RETURN_COUNT: number;
@@ -26,6 +34,21 @@ const MONTH_NAME_TO_NUMBER: Record<string, number> = {
   october: 10,
   november: 11,
   december: 12,
+};
+
+const MONTH_NUMBER_TO_NAME: Record<number, string> = {
+  1: 'January',
+  2: 'February',
+  3: 'March',
+  4: 'April',
+  5: 'May',
+  6: 'June',
+  7: 'July',
+  8: 'August',
+  9: 'September',
+  10: 'October',
+  11: 'November',
+  12: 'December',
 };
 
 export function normalizePan(pan: string | null | undefined): string | null {
@@ -104,14 +127,16 @@ export function computePanLevelGstrTrackCounts(
   };
 }
 
-/**
- * Loan-level CONSIDERED_* return metrics:
- * SUM(per Considered Entity PAN counts) for the associated_loan_id.
- */
-export function computeConsideredGstrTrackAggregationMetricsForPans(
+function sumPanLevelGstrTrackCounts(
   pans: string[],
   allTrackRecords: Array<Record<string, any>>,
-): ConsideredGstrTrackAggregationMetrics {
+): {
+  totalReturnPeriods: number;
+  filedReturnCount: number;
+  nonFiledReturnCount: number;
+  delayedReturnCount: number;
+  ontimeReturnCount: number;
+} {
   let totalReturnPeriods = 0;
   let filedReturnCount = 0;
   let nonFiledReturnCount = 0;
@@ -129,11 +154,47 @@ export function computeConsideredGstrTrackAggregationMetricsForPans(
   }
 
   return {
-    CONSIDERED_TOTAL_RETURN_PERIODS: totalReturnPeriods,
-    CONSIDERED_FILED_RETURN_COUNT: filedReturnCount,
-    CONSIDERED_NON_FILED_RETURN_COUNT: nonFiledReturnCount,
-    CONSIDERED_DELAYED_RETURN_COUNT: delayedReturnCount,
-    CONSIDERED_ONTIME_RETURN_COUNT: ontimeReturnCount,
+    totalReturnPeriods,
+    filedReturnCount,
+    nonFiledReturnCount,
+    delayedReturnCount,
+    ontimeReturnCount,
+  };
+}
+
+/**
+ * Loan-level PRIMARY_* return metrics:
+ * SUM(per Primary PAN counts) for the associated_loan_id.
+ */
+export function computePrimaryGstrTrackAggregationMetricsForPans(
+  pans: string[],
+  allTrackRecords: Array<Record<string, any>>,
+): PrimaryGstrTrackAggregationMetrics {
+  const counts = sumPanLevelGstrTrackCounts(pans, allTrackRecords);
+  return {
+    PRIMARY_TOTAL_RETURN_PERIODS: counts.totalReturnPeriods,
+    PRIMARY_FILED_RETURN_COUNT: counts.filedReturnCount,
+    PRIMARY_NON_FILED_RETURN_COUNT: counts.nonFiledReturnCount,
+    PRIMARY_DELAYED_RETURN_COUNT: counts.delayedReturnCount,
+    PRIMARY_ONTIME_RETURN_COUNT: counts.ontimeReturnCount,
+  };
+}
+
+/**
+ * Loan-level CONSIDERED_* return metrics:
+ * SUM(per Considered Entity PAN counts) for the associated_loan_id.
+ */
+export function computeConsideredGstrTrackAggregationMetricsForPans(
+  pans: string[],
+  allTrackRecords: Array<Record<string, any>>,
+): ConsideredGstrTrackAggregationMetrics {
+  const counts = sumPanLevelGstrTrackCounts(pans, allTrackRecords);
+  return {
+    CONSIDERED_TOTAL_RETURN_PERIODS: counts.totalReturnPeriods,
+    CONSIDERED_FILED_RETURN_COUNT: counts.filedReturnCount,
+    CONSIDERED_NON_FILED_RETURN_COUNT: counts.nonFiledReturnCount,
+    CONSIDERED_DELAYED_RETURN_COUNT: counts.delayedReturnCount,
+    CONSIDERED_ONTIME_RETURN_COUNT: counts.ontimeReturnCount,
   };
 }
 
@@ -195,8 +256,78 @@ export function extractGstrTrackReturnPeriodRows(
   return dedupeReturnPeriodRows(rows);
 }
 
+/** Builds normalized `returns[]` blocks from a Sandbox GSTR track response. */
+export function buildGstr1ReturnsFromResponse(
+  gstrResponse: Record<string, any>,
+): Array<Record<string, any>> {
+  const eFiledList = extractEFiledListFromResponse(gstrResponse).filter(
+    (entry) => {
+      const returnType = String(entry?.rtntype ?? entry?.returnType ?? '')
+        .trim()
+        .toUpperCase();
+      return !returnType || returnType === 'GSTR1' || returnType === 'GSTR-1';
+    },
+  );
+
+  const periodsByYear = new Map<number, Array<Record<string, any>>>();
+
+  for (const entry of eFiledList) {
+    const returnPeriod = normalizeReturnPeriod(
+      entry?.ret_prd ?? entry?.returnPeriod ?? entry?.return_period,
+    );
+    if (!returnPeriod) {
+      continue;
+    }
+
+    const match = returnPeriod.match(/^(\d{2})(\d{4})$/);
+    if (!match) {
+      continue;
+    }
+
+    const month = Number(match[1]);
+    const year = Number(match[2]);
+    const monthName = MONTH_NUMBER_TO_NAME[month];
+    if (!monthName) {
+      continue;
+    }
+
+    const periods = periodsByYear.get(year) ?? [];
+    periods.push({
+      month: monthName,
+      status: entry?.status ?? null,
+      valid:
+        String(entry?.valid ?? '').trim().toUpperCase() === 'Y' ||
+        entry?.valid === true,
+      filedDate: entry?.dof ?? entry?.filedDate ?? null,
+      returnPeriod,
+      filing_delay_days: computeFilingDelayDays(
+        returnPeriod,
+        entry?.dof ?? entry?.filedDate ?? null,
+        normalizeFilingStatus(entry?.status),
+        entry?.filing_delay_days ?? entry?.filingDelayDays,
+      ),
+    });
+    periodsByYear.set(year, periods);
+  }
+
+  return Array.from(periodsByYear.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([year, periods]) => ({ year, periods }));
+}
+
+export function hasTrackFilingRecords(
+  gstrResponse: Record<string, any>,
+): boolean {
+  return extractEFiledListFromResponse(gstrResponse).length > 0;
+}
+
 function extractEFiledList(record: Record<string, any>): Array<Record<string, any>> {
-  const response = record.gstrResponse ?? record.data ?? record;
+  return extractEFiledListFromResponse(record.gstrResponse ?? record.data ?? record);
+}
+
+function extractEFiledListFromResponse(
+  response: Record<string, any>,
+): Array<Record<string, any>> {
   const candidates = [
     response?.data?.data?.EFiledlist,
     response?.data?.EFiledlist,

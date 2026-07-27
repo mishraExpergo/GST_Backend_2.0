@@ -379,8 +379,8 @@ export class GstController {
    * POST /gst/verify-and-fetch/gstr-track
    * Track filing status only — does NOT re-verify GSTINs.
    * Reads GSTINs from the upload table and calls Sandbox public track.
-   * Skips Sandbox when gst_return_filing_track already has that GSTIN + FY
-   * (FETCHED / NO_RECORD / INVALID_FY).
+   * Skips Sandbox when gst_gstR1_returns_compliance_data already has that
+   * GSTIN + FY (FETCHED / NO_RECORD / INVALID_FY).
    * body:
    *   - financialYear (required): Sandbox format e.g. "FY 2021-22"
    *   - tableName (optional)
@@ -446,20 +446,27 @@ export class GstController {
   }
 
   /**
-   * POST /gst/taxpayer/otp/verify
-   * Verifies submitted OTP and saves taxpayer access token.
-   * Body: gstin + otp (required). username optional (auto from upload table).
+   * POST /gst/taxpayer/otp/verify?otp=...
+   * Verifies OTP and saves taxpayer access token.
+   * Query: otp (required).
+   * Body: gstin (required). username optional (auto from upload table).
    */
   @Post('taxpayer/otp/verify')
   async verifyTaxpayerOtp(
     @Body('username') username: string | undefined,
     @Body('gstin') gstin: string,
-    @Body('otp') otp: string,
+    @Query('otp') otp: string,
   ) {
     if (!String(otp ?? '').trim()) {
-      throw new BadRequestException('"otp" is required in verify request.');
+      throw new BadRequestException(
+        '"otp" query parameter is required in verify request.',
+      );
     }
-    const data = await this.gstTaxpayerAuthService.verifyOtp({ username, gstin, otp });
+    const data = await this.gstTaxpayerAuthService.verifyOtp({
+      username,
+      gstin,
+      otp,
+    });
     return this.successResponse('taxpayer-auth.verify-otp', data);
   }
 

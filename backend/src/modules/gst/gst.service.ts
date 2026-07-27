@@ -98,7 +98,7 @@ export class GstService {
           },
           {
             $lookup: {
-              from: 'gst_return_filing_track',
+              from: 'gst_gstR1_returns_compliance_data',
               let: { gstin: '$_normalizedGstin' },
               pipeline: [
                 {
@@ -182,7 +182,7 @@ export class GstService {
           },
           {
             $lookup: {
-              from: 'gst_return_filing_track',
+              from: 'gst_gstR1_returns_compliance_data',
               let: { gstin: '$_normalizedGstin' },
               pipeline: [
                 {
@@ -502,6 +502,21 @@ export class GstService {
   async getCustomerGstrStatusCounts(): Promise<
     Record<string, CustomerGstrStatusSummary>
   > {
+    const uploadTableExists = await this.dataSource.query<
+      { exists: boolean }[]
+    >(
+      `SELECT EXISTS (
+         SELECT 1
+         FROM information_schema.tables
+         WHERE table_schema = 'public'
+           AND table_name = $1
+       ) AS exists`,
+      [GST_UPLOAD_TABLE],
+    );
+    if (!uploadTableExists?.[0]?.exists) {
+      return {};
+    }
+
     const timestampColumns = await this.dataSource.query<
       { column_name: string }[]
     >(

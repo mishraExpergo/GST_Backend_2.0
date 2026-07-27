@@ -4,6 +4,7 @@ describe('GstService.getCustomerGstrStatusCounts', () => {
   it('uses uploaded customer-loan-GSTIN units and matches their latest API-log status', async () => {
     const query = jest
       .fn()
+      .mockResolvedValueOnce([{ exists: true }])
       .mockResolvedValueOnce([{ column_name: 'updated_at' }])
       .mockResolvedValueOnce([
         { customer_id: 'C1', loan_id: 'L1', gst_number: 'GST1' },
@@ -47,7 +48,6 @@ describe('GstService.getCustomerGstrStatusCounts', () => {
           status: 'SUCCESS',
         },
       ]);
-
     const service = new GstService(
       { query } as any,
       {} as any,
@@ -70,9 +70,22 @@ describe('GstService.getCustomerGstrStatusCounts', () => {
       },
     });
 
-    expect(query.mock.calls[1][0]).toContain('primary_gst_no');
-    expect(query.mock.calls[1][0]).toContain('considered_entity_gst_no');
-    expect(query.mock.calls[2][0]).toContain('TRIM(associated_loan_id)');
+    expect(query.mock.calls[2][0]).toContain('primary_gst_no');
+    expect(query.mock.calls[2][0]).toContain('considered_entity_gst_no');
+    expect(query.mock.calls[3][0]).toContain('TRIM(associated_loan_id)');
+  });
+
+  it('returns empty object when gst_uploaded_file_data is missing', async () => {
+    const query = jest.fn().mockResolvedValueOnce([{ exists: false }]);
+    const service = new GstService(
+      { query } as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+
+    await expect(service.getCustomerGstrStatusCounts()).resolves.toEqual({});
+    expect(query).toHaveBeenCalledTimes(1);
   });
 
   it('loads loan and GSTIN API-log caches with one batch query', async () => {

@@ -48,17 +48,23 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
               : false,
           synchronize:
             configService.get<string>('POSTGRES_SYNC', 'false') === 'true',
+          // Retry when RDS is temporarily at max_connections (53300).
+          retryAttempts: 10,
+          retryDelay: 3000,
           // Keep pool small on shared RDS (avoids "rds_reserved" slot exhaustion).
           extra: {
             max: poolMax,
+            min: 0,
             idleTimeoutMillis: toNumber(
               configService.get<string>('POSTGRES_POOL_IDLE_MS'),
-              30000,
+              10000,
             ),
             connectionTimeoutMillis: toNumber(
               configService.get<string>('POSTGRES_POOL_CONN_TIMEOUT_MS'),
               10000,
             ),
+            allowExitOnIdle: true,
+            application_name: 'gst-backend',
           },
         };
       },

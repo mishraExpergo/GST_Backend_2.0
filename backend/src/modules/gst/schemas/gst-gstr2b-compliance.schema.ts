@@ -33,6 +33,10 @@ export class Gstr2bComplianceRecord {
   @Prop({ index: true })
   month: number;
 
+  /** GST return period `MMYYYY` (kept for legacy unique index loanId+gstin+retperiod). */
+  @Prop({ index: true })
+  retperiod: string;
+
   @Prop()
   sourceTable: string;
 

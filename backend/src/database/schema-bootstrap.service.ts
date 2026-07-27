@@ -15,7 +15,7 @@ export class SchemaBootstrapService implements OnModuleInit {
     try {
       await this.ensureCoreTables();
       this.logger.log(
-        'Postgres core schema verified (jobs, aggregation, api_request_logs).',
+        'Postgres core schema verified (jobs, aggregation, api_request_logs, gst_uploaded_file_data).',
       );
     } catch (err) {
       this.logger.error(
@@ -109,6 +109,22 @@ export class SchemaBootstrapService implements OnModuleInit {
         metadata jsonb NULL,
         created_at timestamptz NOT NULL DEFAULT now(),
         updated_at timestamptz NOT NULL DEFAULT now()
+      )
+    `);
+
+    // Created on Excel upload in prod; ensure empty shell exists for local /
+    // first-boot so portfolio APIs do not 500 with "relation does not exist".
+    await this.dataSource.query(`
+      CREATE TABLE IF NOT EXISTS gst_uploaded_file_data (
+        id SERIAL PRIMARY KEY,
+        customer_id text NULL,
+        associated_loan_id text NULL,
+        primary_pan text NULL,
+        primary_gst_no text NULL,
+        considered_entity_gst_no text NULL,
+        username text NULL,
+        status text NULL,
+        last_data_pull_date timestamptz NULL
       )
     `);
   }

@@ -52,3 +52,15 @@ CREATE TABLE IF NOT EXISTS secondary_gst_aggregation (
   associated_loan_id text NULL,
   aggregation_variable text NULL
 );
+
+CREATE TABLE IF NOT EXISTS gst_uploaded_file_data (
+  id SERIAL PRIMARY KEY,
+  customer_id text NULL,
+  associated_loan_id text NULL,
+  primary_pan text NULL,
+  primary_gst_no text NULL,
+  considered_entity_gst_no text NULL,
+  username text NULL,
+  status text NULL,
+  last_data_pull_date timestamptz NULL
+);

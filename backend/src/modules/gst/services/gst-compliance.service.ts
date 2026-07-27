@@ -20,6 +20,11 @@ import { GstComplianceRecord } from '../schemas/gst-compliance.schema';
 import { GstTaxpayerReturnsService } from './gst-taxpayer-returns.service';
 import { Gstr2bComplianceRecord } from '../schemas/gst-gstr2b-compliance.schema';
 import { Gstr3bComplianceRecord } from '../schemas/gst-gstr3b-compliance.schema';
+import { Gstr1ReturnsComplianceRecord } from '../schemas/gst-gstr1-returns-compliance.schema';
+import {
+  buildGstr1ReturnsFromResponse,
+  hasTrackFilingRecords,
+} from './gst-gstr-track-aggregation.util';
 
 type GstEntityType = 'PRIMARY' | 'CONSIDERED_ENTITY';
 
@@ -50,6 +55,8 @@ const GSTIN_PATTERN =
 const VERIFY_FETCH_OPERATION = 'GSTIN_VERIFY_AND_FETCH';
 const VERIFY_2B_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_2B';
 const VERIFY_3B_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_3B';
+const VERIFY_TRACK_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_TRACK';
+const TRACK_SKIP_STATUSES = new Set(['FETCHED', 'NO_RECORD', 'INVALID_FY']);
 
 @Injectable()
 export class GstComplianceService {
@@ -71,6 +78,9 @@ export class GstComplianceService {
     @Optional()
     @InjectModel(Gstr3bComplianceRecord.name)
     private readonly gstr3bComplianceModel?: Model<Gstr3bComplianceRecord>,
+    @Optional()
+    @InjectModel(Gstr1ReturnsComplianceRecord.name)
+    private readonly gstrTrackComplianceModel?: Model<Gstr1ReturnsComplianceRecord>,
     @Optional()
     @Inject('VERIFY_PARENT_SERVICE')
     private readonly verifyParentClient?: ClientProxy,
@@ -147,16 +157,44 @@ export class GstComplianceService {
 
   /**
    * Track filing status job entrypoint (public Sandbox track API).
-   * Full Mongo track pipeline is enabled when gst_return_filing_track support
-   * is present; until then this returns a clear unavailable error.
+   * Stores results in gst_gstR1_returns_compliance_data and triggers
+   * considered-entity track aggregation when the job finishes.
    */
   async startGstrTrackVerifyAndFetch(
-    _financialYear: string,
-    _rawTableName?: string,
+    financialYear: string,
+    rawTableName?: string,
   ): Promise<Job> {
-    throw new ServiceUnavailableException(
-      'GSTR track verify-and-fetch is not configured in this deployment build. Use verify-and-fetch / GSTR-2B/3B endpoints.',
-    );
+    if (!this.gstrTrackComplianceModel) {
+      throw new ServiceUnavailableException(
+        'MongoDB is not enabled. Set ENABLE_MONGO=true and configure MONGO_URI to store GSTR track data.',
+      );
+    }
+
+    let normalizedFy: string;
+    try {
+      normalizedFy =
+        this.gstApiService.formatSandboxFinancialYear(financialYear);
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
+
+    const tableName = this.sanitizeTableName(rawTableName);
+    const job = await this.gstService.createJob('API', {
+      operation: VERIFY_TRACK_OPERATION,
+      sourceTable: tableName,
+      financialYear: normalizedFy,
+    });
+
+    if (this.verifyParentClient) {
+      this.verifyParentClient.emit('verify_parent', {
+        jobId: job.id,
+        tableName,
+      });
+    } else {
+      void this.processVerifyParent(job.id, tableName);
+    }
+
+    return job;
   }
 
   async processVerifyParent(jobId: string, tableName: string): Promise<void> {
@@ -166,10 +204,13 @@ export class GstComplianceService {
       const operation = String(job?.metadata?.operation ?? '').trim();
 
       const allRows = await this.fetchSourceRows(tableName);
+      const financialYear = String(job?.metadata?.financialYear ?? '').trim();
       const { pending: rows, skippedExisting } =
         operation === VERIFY_FETCH_OPERATION
           ? await this.partitionUnprocessedRows(allRows, this.complianceModel!)
-          : { pending: allRows, skippedExisting: 0 };
+          : operation === VERIFY_TRACK_OPERATION
+            ? await this.partitionUnprocessedTrackRows(allRows, financialYear)
+            : { pending: allRows, skippedExisting: 0 };
 
       await this.gstService.mergeJobMetadata(jobId, {
         totalSourceRows: allRows.length,
@@ -240,6 +281,7 @@ export class GstComplianceService {
     const year = Number(job?.metadata?.year);
     const month = Number(job?.metadata?.month);
     const username = String(job?.metadata?.username ?? '').trim();
+    const financialYear = String(job?.metadata?.financialYear ?? '').trim();
 
     const result: BatchResult = {
       totalRows: rows.length,
@@ -255,6 +297,10 @@ export class GstComplianceService {
       await this.runWithConcurrency(rows, this.concurrency, async (row) => {
         if (operation === VERIFY_FETCH_OPERATION) {
           await this.processRow(row, tableName, result);
+          return;
+        }
+        if (operation === VERIFY_TRACK_OPERATION) {
+          await this.processTrackRow(row, tableName, financialYear, result);
           return;
         }
         await this.processReturnRow(
@@ -428,6 +474,95 @@ export class GstComplianceService {
     }
   }
 
+  private async processTrackRow(
+    row: SourceRow,
+    tableName: string,
+    financialYear: string,
+    result: BatchResult,
+  ): Promise<void> {
+    if (!this.gstrTrackComplianceModel) {
+      result.failed++;
+      return;
+    }
+
+    const gstin = (row.gst_no ?? '').trim().toUpperCase();
+    if (!gstin) {
+      result.skippedNoGstin++;
+      return;
+    }
+    if (!this.isValidGstin(gstin)) {
+      result.skippedInvalidGstin++;
+      await this.markRowStatus(tableName, row.loan_id, 'INVALID_GSTIN');
+      return;
+    }
+
+    let normalizedFy: string;
+    try {
+      normalizedFy =
+        this.gstApiService.formatSandboxFinancialYear(financialYear);
+    } catch {
+      result.failed++;
+      await this.markRowStatus(tableName, row.loan_id, 'INVALID_FY');
+      return;
+    }
+
+    try {
+      const response = await this.gstApiService.trackGstrReturns(
+        gstin,
+        normalizedFy,
+      );
+      result.verified++;
+
+      const hasRecords = hasTrackFilingRecords(response);
+      const status = hasRecords ? 'FETCHED' : 'NO_RECORD';
+      const legalName = String(
+        response?.data?.data?.lgnm ??
+          response?.data?.lgnm ??
+          response?.lgnm ??
+          '',
+      );
+      const pan =
+        (row.pan ?? '').trim().toUpperCase() ||
+        (gstin.length >= 12 ? gstin.substring(2, 12) : '');
+
+      await this.gstrTrackComplianceModel.updateOne(
+        { loanId: row.loan_id, gstin, financialYear: normalizedFy },
+        {
+          $set: {
+            loanId: row.loan_id,
+            customerId: row.customer_id ?? null,
+            entityType: row.entity_type,
+            gstin,
+            gstNo: gstin,
+            pan,
+            sourceTable: tableName,
+            legalName,
+            status,
+            financialYear: normalizedFy,
+            returnType: 'GSTR-1',
+            returns: buildGstr1ReturnsFromResponse(response),
+            gstrResponse: response,
+            systemMetadata: {
+              fetchedAt: new Date().toISOString(),
+              dataSource: 'sandbox',
+              fetchMode: 'gstr-track',
+              financialYear: normalizedFy,
+            },
+          },
+        },
+        { upsert: true },
+      );
+      result.stored++;
+      await this.markRowStatus(tableName, row.loan_id, status);
+    } catch (err) {
+      result.failed++;
+      this.logger.error(
+        `Failed GSTR track for loanId=${row.loan_id} gstin=${gstin}: ${(err as Error).message}`,
+      );
+      await this.markRowStatus(tableName, row.loan_id, 'FAILED');
+    }
+  }
+
   private async persistReturnResponse(
     returnType: GstrReturnType,
     row: SourceRow,
@@ -440,6 +575,7 @@ export class GstComplianceService {
     const customerId = row.customer_id ?? null;
     const gstin = (row.gst_no ?? '').trim().toUpperCase();
     const pan = (row.pan ?? '').trim().toUpperCase() || gstin.substring(2, 12);
+    const retperiod = `${String(month).padStart(2, '0')}${year}`;
     const legalName = String(payload?.data?.data?.lgnm ?? payload?.data?.lgnm ?? '');
     const status = String(
       payload?.data?.data?.status ??
@@ -462,6 +598,7 @@ export class GstComplianceService {
             pan,
             year,
             month,
+            retperiod,
             sourceTable: tableName,
             legalName,
             status,
@@ -490,6 +627,7 @@ export class GstComplianceService {
             pan,
             year,
             month,
+            retperiod,
             sourceTable: tableName,
             legalName,
             status,
@@ -550,7 +688,7 @@ export class GstComplianceService {
         await this.gstAggregationService.triggerAfterGstr3bJob(jobId);
         return;
       }
-      if (operation === 'GSTIN_VERIFY_AND_FETCH_GSTR_TRACK') {
+      if (operation === VERIFY_TRACK_OPERATION) {
         await this.gstAggregationService.triggerAfterGstrTrackJob(jobId);
       }
     } catch (err) {
@@ -668,6 +806,46 @@ export class GstComplianceService {
 
     const existingSet = new Set<string>(
       existing.map((d) => `${d.loanId}||${d.gstin}`),
+    );
+
+    let skippedExisting = 0;
+    const pending = rows.filter((r) => {
+      const gstin = (r.gst_no ?? '').trim().toUpperCase();
+      if (!gstin) return true;
+      const alreadyStored = existingSet.has(`${r.loan_id}||${gstin}`);
+      if (alreadyStored) skippedExisting++;
+      return !alreadyStored;
+    });
+
+    return { pending, skippedExisting };
+  }
+
+  private async partitionUnprocessedTrackRows(
+    rows: SourceRow[],
+    financialYear: string,
+  ): Promise<{ pending: SourceRow[]; skippedExisting: number }> {
+    if (!this.gstrTrackComplianceModel || !financialYear) {
+      return { pending: rows, skippedExisting: 0 };
+    }
+
+    const candidates = rows.filter((r) => (r.gst_no ?? '').trim());
+    if (candidates.length === 0) {
+      return { pending: rows, skippedExisting: 0 };
+    }
+
+    const loanIds = Array.from(new Set(candidates.map((r) => r.loan_id)));
+    const existing = (await this.gstrTrackComplianceModel
+      .find({
+        loanId: { $in: loanIds },
+        financialYear,
+        status: { $in: Array.from(TRACK_SKIP_STATUSES) },
+      })
+      .select('loanId gstin status financialYear')
+      .lean()
+      .exec()) as Array<{ loanId: string; gstin: string }>;
+
+    const existingSet = new Set<string>(
+      existing.map((d) => `${d.loanId}||${String(d.gstin).toUpperCase()}`),
     );
 
     let skippedExisting = 0;

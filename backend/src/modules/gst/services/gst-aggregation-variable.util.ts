@@ -23,6 +23,15 @@ export const CONSIDERED_GST_COMPLIANCE_METRIC_KEYS = [
   'CONSIDERED_EINVOICE_ENABLED_COUNT',
 ] as const;
 
+/** Keys written by verify-and-fetch/gstr-track primary aggregation. */
+export const PRIMARY_GSTR_TRACK_METRIC_KEYS = [
+  'PRIMARY_TOTAL_RETURN_PERIODS',
+  'PRIMARY_FILED_RETURN_COUNT',
+  'PRIMARY_NON_FILED_RETURN_COUNT',
+  'PRIMARY_DELAYED_RETURN_COUNT',
+  'PRIMARY_ONTIME_RETURN_COUNT',
+] as const;
+
 /** Keys written by verify-and-fetch/gstr-track considered-entity aggregation. */
 export const CONSIDERED_GSTR_TRACK_METRIC_KEYS = [
   'CONSIDERED_TOTAL_RETURN_PERIODS',

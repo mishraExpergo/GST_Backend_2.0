@@ -151,14 +151,15 @@ export class GstTaxpayerAuthService implements OnModuleInit, OnModuleDestroy {
 
     try {
       const platformToken = await this.gstAuthService.getAccessToken();
+      // Sandbox: POST .../otp/verify?otp=... with body { username, gstin } only
       const body: Record<string, any> = {
         username: normalized.username,
         gstin: normalized.gstin,
-        otp: otpValue,
+        
       };
 
       const response = await this.postToSandbox(
-        '/gst/compliance/tax-payer/otp/verify',
+        `/gst/compliance/tax-payer/otp/verify?otp=${encodeURIComponent(otpValue)}`,
         body,
         this.buildHeaders(platformToken, true),
       );
