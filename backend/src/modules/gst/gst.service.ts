@@ -1363,6 +1363,125 @@ export class GstService {
     };
   }
 
+  private requirePanSearchModel(): Model<GstPanSearchRecord> {
+    if (!this.panSearchModel) {
+      throw new ServiceUnavailableException(
+        'MongoDB is not enabled. Set ENABLE_MONGO=true and configure MONGO_URI to read PAN search data.',
+      );
+    }
+    return this.panSearchModel;
+  }
+
+  private normalizePanSearchKey(stateCode?: string | null): string | undefined {
+    const trimmed = String(stateCode ?? '').trim();
+    if (!trimmed) {
+      return undefined;
+    }
+    if (trimmed.toLowerCase() === 'all') {
+      return 'all';
+    }
+    return trimmed.padStart(2, '0');
+  }
+
+  private serializePanSearchDoc(doc: GstPanSearchRecord & { _id?: any; createdAt?: Date; updatedAt?: Date }) {
+    return {
+      id: String(doc._id),
+      pan: doc.pan,
+      searchKey: doc.searchKey,
+      mode: doc.mode,
+      summary: doc.summary ?? null,
+      primaryGstins: doc.primaryGstins ?? [],
+      byState: doc.byState ?? [],
+      unlistedGstins: doc.unlistedGstins ?? [],
+      missingFromSandbox: doc.missingFromSandbox ?? [],
+      failedStates: doc.failedStates ?? [],
+      skippedStateCodes: doc.skippedStateCodes ?? [],
+      createdAt: doc.createdAt ?? null,
+      updatedAt: doc.updatedAt ?? null,
+    };
+  }
+
+  /**
+   * Read stored PAN search snapshot(s) from MongoDB.
+   * - With state_code / searchKey: one document (or null).
+   * - Without: all documents for the PAN.
+   */
+  async getPanSearchByPan(
+    pan: string,
+    stateCode?: string | null,
+  ): Promise<{
+    pan: string;
+    searchKey: string | null;
+    count: number;
+    items: ReturnType<GstService['serializePanSearchDoc']>[];
+  }> {
+    const model = this.requirePanSearchModel();
+    const normalizedPan = String(pan ?? '')
+      .trim()
+      .toUpperCase();
+    if (!normalizedPan) {
+      throw new BadRequestException('Query parameter "pan" is required.');
+    }
+
+    const searchKey = this.normalizePanSearchKey(stateCode);
+    const filter: Record<string, string> = { pan: normalizedPan };
+    if (searchKey) {
+      filter.searchKey = searchKey;
+    }
+
+    const docs = await model
+      .find(filter)
+      .sort({ searchKey: 1, updatedAt: -1 })
+      .lean()
+      .exec();
+
+    return {
+      pan: normalizedPan,
+      searchKey: searchKey ?? null,
+      count: docs.length,
+      items: docs.map((d) => this.serializePanSearchDoc(d as any)),
+    };
+  }
+
+  /**
+   * Unlisted GSTINs from the latest matching stored PAN search.
+   * Prefers searchKey=all when state_code omitted; otherwise the given state.
+   */
+  async getUnlistedGstinsByPan(
+    pan: string,
+    stateCode?: string | null,
+  ): Promise<{
+    pan: string;
+    searchKey: string;
+    unlistedGstins: Record<string, any>[];
+    summary: Record<string, number> | null;
+    updatedAt: Date | null;
+  }> {
+    const model = this.requirePanSearchModel();
+    const normalizedPan = String(pan ?? '')
+      .trim()
+      .toUpperCase();
+    if (!normalizedPan) {
+      throw new BadRequestException('Query parameter "pan" is required.');
+    }
+
+    const searchKey = this.normalizePanSearchKey(stateCode) ?? 'all';
+    const doc = await model.findOne({ pan: normalizedPan, searchKey }).lean().exec();
+    if (!doc) {
+      throw new BadRequestException(
+        `No stored PAN search found for pan=${normalizedPan}, searchKey=${searchKey}. Run POST /gst/compliance/public/pan/search first.`,
+      );
+    }
+
+    return {
+      pan: normalizedPan,
+      searchKey,
+      unlistedGstins: (doc as any).unlistedGstins ?? [],
+      summary: (doc as any).summary ?? null,
+      updatedAt: (doc as any).updatedAt ?? null,
+    };
+  }
+
   private isCsvFile(
     originalName: string | undefined,
     mimetype: string | undefined,

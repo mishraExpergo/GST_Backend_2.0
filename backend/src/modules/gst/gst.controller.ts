@@ -31,6 +31,7 @@ import {
 } from './services/gst-return-aggregation-scheduler.service';
 import { FileStorageService } from '../shared/services/file-storage.service';
 import type { ApiRequestStatus } from '../../entities/api-request-log.entity';
+import { Public } from '../../auth/public.decorator';
 
 @Controller('gst')
 export class GstController {
@@ -108,6 +109,7 @@ export class GstController {
    * primary_gst_no rows in gst_uploaded_file_data for the same PAN.
    */
   @Post('compliance/public/pan/search')
+  @Public()
   @HttpCode(HttpStatus.OK)
   async searchPanByState(
     @Body('pan') pan: string,
@@ -142,6 +144,42 @@ export class GstController {
         err instanceof Error ? err.message : String(err),
       );
     }
+  }
+
+  /**
+   * GET /gst/compliance/public/pan/search?pan=AAACN0255D&state_code=37
+   * Reads stored PAN search snapshot(s) from MongoDB.
+   * Omit state_code to return every searchKey for the PAN.
+   */
+  @Get('compliance/public/pan/search')
+  @Public()
+  async getPanSearchByPan(
+    @Query('pan') pan?: string,
+    @Query('state_code') stateCode?: string,
+  ) {
+    const data = await this.gstService.getPanSearchByPan(pan ?? '', stateCode);
+    return this.successResponse('compliance.public.pan-search.get', data);
+  }
+
+  /**
+   * GET /gst/compliance/public/pan/search/unlisted?pan=AAACN0255D&state_code=all
+   * Returns unlisted GSTINs from the stored snapshot.
+   * Default searchKey is `all` when state_code is omitted.
+   */
+  @Get('compliance/public/pan/search/unlisted')
+  @Public()
+  async getUnlistedGstinsByPan(
+    @Query('pan') pan?: string,
+    @Query('state_code') stateCode?: string,
+  ) {
+    const data = await this.gstService.getUnlistedGstinsByPan(
+      pan ?? '',
+      stateCode,
+    );
+    return this.successResponse(
+      'compliance.public.pan-search.unlisted',
+      data,
+    );
   }
 
   /**
