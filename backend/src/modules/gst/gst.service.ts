@@ -6,15 +6,19 @@ import {
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { InjectConnection } from '@nestjs/mongoose';
+import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { Connection } from 'mongoose';
+import { Connection, Model } from 'mongoose';
 import { DataSource, QueryRunner, Repository } from 'typeorm';
 import * as XLSX from 'xlsx';
 import * as fs from 'fs';
 import { Job, JobStatus, JobType } from '../../entities/job.entity';
 import { JobTask, TaskStatus } from '../../entities/job-task.entity';
 import { FileStorageService } from '../shared/services/file-storage.service';
+import {
+  GstPanSearchRecord,
+} from './schemas/gst-pan-search.schema';
+import { PanSearchCompareResult } from './services/gst-pan-search.util';
 
 type PgType = 'INTEGER' | 'NUMERIC' | 'TIMESTAMP' | 'BOOLEAN' | 'TEXT';
 
@@ -67,6 +71,9 @@ export class GstService {
     @InjectRepository(JobTask) private readonly taskRepo: Repository<JobTask>,
     private readonly fileStorageService: FileStorageService,
     @Optional() @InjectConnection() mongoConnection?: Connection,
+    @Optional()
+    @InjectModel(GstPanSearchRecord.name)
+    private readonly panSearchModel?: Model<GstPanSearchRecord>,
   ) {
     this.mongoConnection = mongoConnection;
   }
@@ -1278,6 +1285,82 @@ export class GstService {
     if (allNumber) return 'NUMERIC';
     if (allDate) return 'TIMESTAMP';
     return 'TEXT';
+  }
+
+  /**
+   * Distinct primary GSTINs from gst_uploaded_file_data for a PAN.
+   */
+  async getPrimaryGstinsByPan(pan: string): Promise<string[]> {
+    const normalizedPan = String(pan ?? '')
+      .trim()
+      .toUpperCase();
+    if (!normalizedPan) {
+      return [];
+    }
+
+    const rows = await this.dataSource.query<{ gstin: string }[]>(
+      `SELECT DISTINCT UPPER(TRIM(primary_gst_no)) AS gstin
+       FROM public."${GST_UPLOAD_TABLE}"
+       WHERE UPPER(TRIM(primary_pan)) = $1
+         AND primary_gst_no IS NOT NULL
+         AND TRIM(primary_gst_no) <> ''`,
+      [normalizedPan],
+    );
+
+    return (rows ?? [])
+      .map((r) => String(r.gstin ?? '').trim().toUpperCase())
+      .filter(Boolean)
+      .sort();
+  }
+
+  /**
+   * Upsert PAN search compare snapshot into MongoDB (`gst_pan_search_data`).
+   * Unique key: pan + searchKey (`all` or state code).
+   */
+  async upsertPanSearchResult(
+    result: PanSearchCompareResult,
+    stateCode?: string | null,
+  ): Promise<{ id: string; pan: string; searchKey: string }> {
+    if (!this.panSearchModel) {
+      throw new ServiceUnavailableException(
+        'MongoDB is not enabled. Set ENABLE_MONGO=true and configure MONGO_URI to store PAN search data.',
+      );
+    }
+
+    const pan = String(result.pan ?? '')
+      .trim()
+      .toUpperCase();
+    const trimmedState = String(stateCode ?? '').trim();
+    const searchKey =
+      result.mode === 'single-state'
+        ? trimmedState.padStart(2, '0') || 'unknown'
+        : 'all';
+
+    const doc = await this.panSearchModel.findOneAndUpdate(
+      { pan, searchKey },
+      {
+        $set: {
+          pan,
+          searchKey,
+          mode: result.mode,
+          summary: result.summary,
+          primaryGstins: result.primaryGstins,
+          byState: result.byState,
+          unlistedGstins: result.unlistedGstins,
+          missingFromSandbox: result.missingFromSandbox,
+          failedStates: result.failedStates,
+          skippedStateCodes: result.skippedStateCodes ?? [],
+          payload: result,
+        },
+      },
+      { upsert: true, new: true },
+    );
+
+    return {
+      id: String(doc._id),
+      pan,
+      searchKey,
+    };
   }
 
   private isCsvFile(

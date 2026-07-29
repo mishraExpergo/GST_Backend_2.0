@@ -77,6 +77,92 @@ export class GstApiService {
     return this.authedPost<Record<string, any>>(url, { gstin });
   }
 
+  /**
+   * POST /gst/compliance/public/pan/search?state_code=XX
+   * Body: { pan }
+   */
+  async searchPanForState(
+    pan: string,
+    stateCode: string,
+  ): Promise<Record<string, any>> {
+    const params = new URLSearchParams({ state_code: stateCode });
+    const url = `${this.baseUrl}/gst/compliance/public/pan/search?${params.toString()}`;
+    return this.authedPost<Record<string, any>>(url, { pan });
+  }
+
+  /**
+   * Search GSTINs for a PAN.
+   * - With stateCode: single Sandbox call.
+   * - Without: parallel calls for state codes 01..38, skipping 25, 28, 31, 35, 38.
+   */
+  async searchPan(
+    pan: string,
+    stateCode?: string | null,
+  ): Promise<Record<string, any>> {
+    const normalizedPan = String(pan ?? '')
+      .trim()
+      .toUpperCase();
+    if (!normalizedPan) {
+      throw new Error('"pan" is required.');
+    }
+
+    const trimmedState = String(stateCode ?? '').trim();
+    if (trimmedState) {
+      const code = this.normalizeStateCode(trimmedState);
+      const data = await this.searchPanForState(normalizedPan, code);
+      return {
+        pan: normalizedPan,
+        mode: 'single-state',
+        stateCode: code,
+        data,
+      };
+    }
+
+    const skippedStateCodes = new Set([25, 28, 31, 35, 38]);
+    const codes = Array.from({ length: 38 }, (_, i) => i + 1)
+      .filter((n) => !skippedStateCodes.has(n))
+      .map((n) => String(n).padStart(2, '0'));
+
+    const results = await Promise.all(
+      codes.map(async (code) => {
+        try {
+          const data = await this.searchPanForState(normalizedPan, code);
+          return { stateCode: code, success: true as const, data };
+        } catch (err) {
+          return {
+            stateCode: code,
+            success: false as const,
+            error: err instanceof Error ? err.message : String(err),
+          };
+        }
+      }),
+    );
+
+    const succeeded = results.filter((r) => r.success);
+    return {
+      pan: normalizedPan,
+      mode: 'all-states',
+      skippedStateCodes: [...skippedStateCodes].map((n) =>
+        String(n).padStart(2, '0'),
+      ),
+      totalStates: codes.length,
+      succeeded: succeeded.length,
+      failed: results.length - succeeded.length,
+      results,
+    };
+  }
+
+  /** GST state codes are two-digit strings 01..38. */
+  private normalizeStateCode(raw: string): string {
+    const n = Number.parseInt(raw, 10);
+    if (!Number.isInteger(n) || n < 1 || n > 38) {
+      throw new Error(
+        `Invalid state_code "${raw}". Expected an integer from 1 to 38.`,
+      );
+    }
+    return String(n).padStart(2, '0');
+  }
+
   /** Sandbox track API requires "FY YYYY-YY" (e.g. "FY 2023-24"). */
   formatSandboxFinancialYear(financialYear: string): string {
     const match = financialYear.trim().match(/^(?:FY\s*)?(\d{4}-\d{2})$/i);

@@ -42,6 +42,10 @@ import {
   Gstr1ReturnsComplianceRecord,
   Gstr1ReturnsComplianceSchema,
 } from './schemas/gst-gstr1-returns-compliance.schema';
+import {
+  GstPanSearchRecord,
+  GstPanSearchSchema,
+} from './schemas/gst-pan-search.schema';
 
 const enableRabbitMQ = process.env.ENABLE_RABBITMQ === 'true';
 const enableMongo = process.env.ENABLE_MONGO === 'true';
@@ -68,9 +72,9 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
               name: Gstr1ReturnsComplianceRecord.name,
               schema: Gstr1ReturnsComplianceSchema,
             },
+            { name: GstPanSearchRecord.name, schema: GstPanSearchSchema },
           ]),
         ]
-        
       : []),
     ...(enableRabbitMQ
       ? [

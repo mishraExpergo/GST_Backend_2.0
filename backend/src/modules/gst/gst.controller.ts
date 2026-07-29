@@ -5,6 +5,7 @@ import {
   Controller,
   Get,
   HttpCode,
+  HttpException,
   HttpStatus,
   Inject,
   Optional,
@@ -19,6 +20,8 @@ import { ClientProxy } from '@nestjs/microservices';
 import { randomUUID } from 'crypto';
 import { GstService, GST_UPLOAD_TABLE } from './gst.service';
 import { GstComplianceService } from './services/gst-compliance.service';
+import { GstApiService } from './services/gst-api.service';
+import { comparePanSearchWithPrimaryGstins } from './services/gst-pan-search.util';
 import { GstTaxpayerAuthService } from './services/gst-taxpayer-auth.service';
 import { GstTaxpayerReturnsService } from './services/gst-taxpayer-returns.service';
 import { ApiRequestLogService } from './services/api-request-log.service';
@@ -35,6 +38,7 @@ export class GstController {
     private readonly gstService: GstService,
     private readonly fileStorageService: FileStorageService,
     private readonly gstComplianceService: GstComplianceService,
+    private readonly gstApiService: GstApiService,
     private readonly gstTaxpayerAuthService: GstTaxpayerAuthService,
     private readonly gstTaxpayerReturnsService: GstTaxpayerReturnsService,
     private readonly apiRequestLogService: ApiRequestLogService,
@@ -94,6 +98,50 @@ export class GstController {
       throw new BadRequestException('"requests" must be an array.');
     }
     return this.gstService.getPublicComplianceDataBatch(requests);
+  }
+
+  /**
+   * POST /gst/compliance/public/pan/search?state_code=37
+   * Body: { "pan": "AAACN0255D" }
+   * If state_code is omitted, fans out parallel Sandbox calls for codes 01..38.
+   * Response GSTINs are grouped by state and tagged listed/unlisted against
+   * primary_gst_no rows in gst_uploaded_file_data for the same PAN.
+   */
+  @Post('compliance/public/pan/search')
+  @HttpCode(HttpStatus.OK)
+  async searchPanByState(
+    @Body('pan') pan: string,
+    @Query('state_code') stateCode?: string,
+  ) {
+    const normalizedPan = String(pan ?? '')
+      .trim()
+      .toUpperCase();
+    if (!normalizedPan) {
+      throw new BadRequestException('"pan" is required in request body.');
+    }
+
+    try {
+      const [sandbox, primaryGstins] = await Promise.all([
+        this.gstApiService.searchPan(normalizedPan, stateCode),
+        this.gstService.getPrimaryGstinsByPan(normalizedPan),
+      ]);
+      const data = comparePanSearchWithPrimaryGstins(sandbox, primaryGstins);
+      const stored = await this.gstService.upsertPanSearchResult(
+        data,
+        stateCode,
+      );
+      return this.successResponse('compliance.public.pan-search', {
+        ...data,
+        stored,
+      });
+    } catch (err) {
+      if (err instanceof HttpException) {
+        throw err;
+      }
+      throw new BadRequestException(
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   }
 
   /**
