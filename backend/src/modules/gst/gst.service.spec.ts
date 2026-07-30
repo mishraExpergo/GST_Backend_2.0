@@ -53,6 +53,7 @@ describe('GstService.getCustomerGstrStatusCounts', () => {
       {} as any,
       {} as any,
       {} as any,
+      {} as any,
     );
 
     await expect(service.getCustomerGstrStatusCounts()).resolves.toEqual({
@@ -79,6 +80,7 @@ describe('GstService.getCustomerGstrStatusCounts', () => {
     const query = jest.fn().mockResolvedValueOnce([{ exists: false }]);
     const service = new GstService(
       { query } as any,
+      {} as any,
       {} as any,
       {} as any,
       {} as any,
@@ -109,6 +111,7 @@ describe('GstService.getCustomerGstrStatusCounts', () => {
       .mockResolvedValueOnce(rows);
     const service = new GstService(
       { query } as any,
+      {} as any,
       {} as any,
       {} as any,
       {} as any,

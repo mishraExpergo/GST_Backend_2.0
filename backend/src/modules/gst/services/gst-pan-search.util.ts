@@ -1,36 +1,34 @@
-export type GstListingStatus = 'listed' | 'unlisted';
-
-export interface PanSearchGstinRecord {
-  gstin: string;
-  stateCode: string;
-  listingStatus: GstListingStatus;
-  legalName: string | null;
-  tradeName: string | null;
-  status: string | null;
-  taxpayerType: string | null;
-}
-
-export interface PanSearchStateGroup {
-  stateCode: string;
-  gstins: PanSearchGstinRecord[];
-}
-
-export interface PanSearchCompareResult {
+export interface EntityPanSearchBlock {
   pan: string;
-  mode: string;
-  skippedStateCodes?: string[];
-  summary: {
-    primaryGstinCount: number;
-    sandboxGstinCount: number;
-    listedCount: number;
-    unlistedCount: number;
-    missingFromSandboxCount: number;
-  };
+  companyName: string | null;
+  listedGstins: string[];
+  unlistedGstins: string[];
+}
+
+export interface LoanPanSearchResult {
+  loanId: string;
+  customerId: string;
+  primary: EntityPanSearchBlock | null;
+  consideredEntities: EntityPanSearchBlock[];
+}
+
+export interface UploadLoanContext {
+  loanId: string;
+  customerId: string;
+  primaryPan: string | null;
   primaryGstins: string[];
-  byState: PanSearchStateGroup[];
-  unlistedGstins: PanSearchGstinRecord[];
-  missingFromSandbox: string[];
-  failedStates: Array<{ stateCode: string; error: string }>;
+  /** Distinct considered-entity PANs with their uploaded GSTINs. */
+  consideredEntities: Array<{
+    pan: string;
+    gstins: string[];
+  }>;
+}
+
+function normalizePan(raw: unknown): string | null {
+  const value = String(raw ?? '')
+    .trim()
+    .toUpperCase();
+  return value || null;
 }
 
 function normalizeGstin(raw: unknown): string | null {
@@ -52,6 +50,13 @@ function stateCodeFromGstin(gstin: string, fallback?: string): string {
   return '00';
 }
 
+interface SandboxGstinHit {
+  gstin: string;
+  stateCode: string;
+  legalName: string | null;
+  tradeName: string | null;
+}
+
 /**
  * Sandbox pan/search `data` is either:
  * - array of { gstin?, data: { gstin, lgnm, ... } }
@@ -60,7 +65,7 @@ function stateCodeFromGstin(gstin: string, fallback?: string): string {
 export function extractGstinsFromSandboxPayload(
   payload: unknown,
   fallbackStateCode?: string,
-): Array<Omit<PanSearchGstinRecord, 'listingStatus'>> {
+): SandboxGstinHit[] {
   if (!payload || typeof payload !== 'object') {
     return [];
   }
@@ -80,7 +85,7 @@ export function extractGstinsFromSandboxPayload(
         ? [data]
         : [];
 
-  const out: Array<Omit<PanSearchGstinRecord, 'listingStatus'>> = [];
+  const out: SandboxGstinHit[] = [];
   const seen = new Set<string>();
 
   for (const item of items) {
@@ -96,123 +101,130 @@ export function extractGstinsFromSandboxPayload(
       stateCode: stateCodeFromGstin(gstin, fallbackStateCode),
       legalName: nested?.lgnm != null ? String(nested.lgnm) : null,
       tradeName: nested?.tradeNam != null ? String(nested.tradeNam) : null,
-      status: nested?.sts != null ? String(nested.sts) : null,
-      taxpayerType: nested?.dty != null ? String(nested.dty) : null,
     });
   }
 
   return out;
 }
 
-function collectFromSearchResponse(searchResponse: Record<string, any>): {
-  mode: string;
-  skippedStateCodes?: string[];
-  records: Array<Omit<PanSearchGstinRecord, 'listingStatus'>>;
-  failedStates: Array<{ stateCode: string; error: string }>;
-} {
+export function collectSandboxGstins(
+  searchResponse: Record<string, any>,
+): SandboxGstinHit[] {
   const mode = String(searchResponse.mode ?? 'unknown');
-  const failedStates: Array<{ stateCode: string; error: string }> = [];
-  const records: Array<Omit<PanSearchGstinRecord, 'listingStatus'>> = [];
+  const records: SandboxGstinHit[] = [];
+  const seen = new Set<string>();
+
+  const pushAll = (hits: SandboxGstinHit[]) => {
+    for (const hit of hits) {
+      if (seen.has(hit.gstin)) continue;
+      seen.add(hit.gstin);
+      records.push(hit);
+    }
+  };
 
   if (mode === 'single-state') {
-    const stateCode = String(searchResponse.stateCode ?? '');
-    records.push(
-      ...extractGstinsFromSandboxPayload(searchResponse.data, stateCode),
+    pushAll(
+      extractGstinsFromSandboxPayload(
+        searchResponse.data,
+        String(searchResponse.stateCode ?? ''),
+      ),
     );
-    return {
-      mode,
-      records,
-      failedStates,
-    };
+    return records;
   }
 
   const results = Array.isArray(searchResponse.results)
     ? searchResponse.results
     : [];
-
   for (const result of results) {
-    const stateCode = String(result?.stateCode ?? '');
-    if (!result?.success) {
-      failedStates.push({
-        stateCode,
-        error: String(result?.error ?? 'Unknown error'),
-      });
-      continue;
-    }
-    records.push(...extractGstinsFromSandboxPayload(result.data, stateCode));
+    if (!result?.success) continue;
+    pushAll(
+      extractGstinsFromSandboxPayload(
+        result.data,
+        String(result?.stateCode ?? ''),
+      ),
+    );
   }
 
-  return {
-    mode,
-    skippedStateCodes: Array.isArray(searchResponse.skippedStateCodes)
-      ? searchResponse.skippedStateCodes.map(String)
-      : undefined,
-    records,
-    failedStates,
-  };
+  return records;
+}
+
+function pickCompanyName(hits: SandboxGstinHit[]): string | null {
+  for (const hit of hits) {
+    const name = (hit.legalName ?? hit.tradeName ?? '').trim();
+    if (name) return name;
+  }
+  return null;
 }
 
 /**
- * Groups Sandbox PAN-search GSTINs by state and tags each as listed/unlisted
- * against primary GSTINs from gst_uploaded_file_data.
+ * Split Sandbox GSTINs into listed (present in upload) vs unlisted.
  */
-export function comparePanSearchWithPrimaryGstins(
-  searchResponse: Record<string, any>,
-  primaryGstinsRaw: string[],
-): PanSearchCompareResult {
-  const pan = String(searchResponse.pan ?? '')
-    .trim()
-    .toUpperCase();
-  const primaryGstins = [
-    ...new Set(
-      primaryGstinsRaw
-        .map((g) => normalizeGstin(g))
-        .filter((g): g is string => !!g),
-    ),
-  ].sort();
-  const primarySet = new Set(primaryGstins);
+export function buildEntityPanBlock(
+  pan: string,
+  sandboxHits: SandboxGstinHit[],
+  uploadedGstins: string[],
+): EntityPanSearchBlock {
+  const uploadedSet = new Set(
+    uploadedGstins
+      .map((g) => normalizeGstin(g))
+      .filter((g): g is string => !!g),
+  );
+  const listedGstins: string[] = [];
+  const unlistedGstins: string[] = [];
 
-  const collected = collectFromSearchResponse(searchResponse);
-  const tagged: PanSearchGstinRecord[] = collected.records.map((r) => ({
-    ...r,
-    listingStatus: primarySet.has(r.gstin) ? 'listed' : 'unlisted',
-  }));
-
-  const byStateMap = new Map<string, PanSearchGstinRecord[]>();
-  for (const record of tagged) {
-    const list = byStateMap.get(record.stateCode) ?? [];
-    list.push(record);
-    byStateMap.set(record.stateCode, list);
+  for (const hit of sandboxHits) {
+    if (uploadedSet.has(hit.gstin)) {
+      listedGstins.push(hit.gstin);
+    } else {
+      unlistedGstins.push(hit.gstin);
+    }
   }
 
-  const byState: PanSearchStateGroup[] = [...byStateMap.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([stateCode, gstins]) => ({
-      stateCode,
-      gstins: gstins.sort((a, b) => a.gstin.localeCompare(b.gstin)),
-    }));
-
-  const sandboxSet = new Set(tagged.map((r) => r.gstin));
-  const unlistedGstins = tagged
-    .filter((r) => r.listingStatus === 'unlisted')
-    .sort((a, b) => a.gstin.localeCompare(b.gstin));
-  const missingFromSandbox = primaryGstins.filter((g) => !sandboxSet.has(g));
+  listedGstins.sort();
+  unlistedGstins.sort();
 
   return {
-    pan,
-    mode: collected.mode,
-    skippedStateCodes: collected.skippedStateCodes,
-    summary: {
-      primaryGstinCount: primaryGstins.length,
-      sandboxGstinCount: tagged.length,
-      listedCount: tagged.filter((r) => r.listingStatus === 'listed').length,
-      unlistedCount: unlistedGstins.length,
-      missingFromSandboxCount: missingFromSandbox.length,
-    },
-    primaryGstins,
-    byState,
+    pan: normalizePan(pan) ?? pan,
+    companyName: pickCompanyName(sandboxHits),
+    listedGstins,
     unlistedGstins,
-    missingFromSandbox,
-    failedStates: collected.failedStates,
+  };
+}
+
+export function buildLoanPanSearchResult(
+  context: UploadLoanContext,
+  primarySandbox: Record<string, any> | null,
+  consideredSandboxByPan: Map<string, Record<string, any>>,
+): LoanPanSearchResult {
+  const primary =
+    context.primaryPan && primarySandbox
+      ? buildEntityPanBlock(
+          context.primaryPan,
+          collectSandboxGstins(primarySandbox),
+          context.primaryGstins,
+        )
+      : context.primaryPan
+        ? {
+            pan: context.primaryPan,
+            companyName: null,
+            listedGstins: [],
+            unlistedGstins: [],
+          }
+        : null;
+
+  const consideredEntities = context.consideredEntities.map((entity) => {
+    const sandbox = consideredSandboxByPan.get(entity.pan) ?? null;
+    return buildEntityPanBlock(
+      entity.pan,
+      sandbox ? collectSandboxGstins(sandbox) : [],
+      entity.gstins,
+    );
+  });
+
+  return {
+    loanId: context.loanId,
+    customerId: context.customerId,
+    primary,
+    consideredEntities,
   };
 }

@@ -121,6 +121,7 @@ export class SchemaBootstrapService implements OnModuleInit {
         associated_loan_id text NULL,
         primary_pan text NULL,
         primary_gst_no text NULL,
+        considered_entity_pan text NULL,
         considered_entity_gst_no text NULL,
         username text NULL,
         status text NULL,

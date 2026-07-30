@@ -21,7 +21,6 @@ import { randomUUID } from 'crypto';
 import { GstService, GST_UPLOAD_TABLE } from './gst.service';
 import { GstComplianceService } from './services/gst-compliance.service';
 import { GstApiService } from './services/gst-api.service';
-import { comparePanSearchWithPrimaryGstins } from './services/gst-pan-search.util';
 import { GstTaxpayerAuthService } from './services/gst-taxpayer-auth.service';
 import { GstTaxpayerReturnsService } from './services/gst-taxpayer-returns.service';
 import { ApiRequestLogService } from './services/api-request-log.service';
@@ -104,38 +103,20 @@ export class GstController {
   /**
    * POST /gst/compliance/public/pan/search?state_code=37
    * Body: { "pan": "AAACN0255D" }
-   * If state_code is omitted, fans out parallel Sandbox calls for codes 01..38.
-   * Response GSTINs are grouped by state and tagged listed/unlisted against
-   * primary_gst_no rows in gst_uploaded_file_data for the same PAN.
+   * Resolves loanId + customerId from gst_uploaded_file_data (primary_pan),
+   * then Sandbox-searches primary + considered-entity PANs and returns
+   * listed/unlisted GSTINs per loan/customer.
    */
   @Post('compliance/public/pan/search')
   @Public()
   @HttpCode(HttpStatus.OK)
-  async searchPanByState(
+  async searchPanByPrimaryPan(
     @Body('pan') pan: string,
     @Query('state_code') stateCode?: string,
   ) {
-    const normalizedPan = String(pan ?? '')
-      .trim()
-      .toUpperCase();
-    if (!normalizedPan) {
-      throw new BadRequestException('"pan" is required in request body.');
-    }
-
     try {
-      const [sandbox, primaryGstins] = await Promise.all([
-        this.gstApiService.searchPan(normalizedPan, stateCode),
-        this.gstService.getPrimaryGstinsByPan(normalizedPan),
-      ]);
-      const data = comparePanSearchWithPrimaryGstins(sandbox, primaryGstins);
-      const stored = await this.gstService.upsertPanSearchResult(
-        data,
-        stateCode,
-      );
-      return this.successResponse('compliance.public.pan-search', {
-        ...data,
-        stored,
-      });
+      const data = await this.gstService.searchPanByPrimaryPan(pan, stateCode);
+      return this.successResponse('compliance.public.pan-search', data);
     } catch (err) {
       if (err instanceof HttpException) {
         throw err;
@@ -148,38 +129,20 @@ export class GstController {
 
   /**
    * GET /gst/compliance/public/pan/search?pan=AAACN0255D&state_code=37
-   * Reads stored PAN search snapshot(s) from MongoDB.
-   * Omit state_code to return every searchKey for the PAN.
+   * Resolves loanId/customerId from upload for the PAN, then reads stored
+   * MongoDB snapshot(s). Omit state_code to return every searchKey.
    */
   @Get('compliance/public/pan/search')
   @Public()
-  async getPanSearchByPan(
+  async getPanSearchByPrimaryPan(
     @Query('pan') pan?: string,
     @Query('state_code') stateCode?: string,
   ) {
-    const data = await this.gstService.getPanSearchByPan(pan ?? '', stateCode);
-    return this.successResponse('compliance.public.pan-search.get', data);
-  }
-
-  /**
-   * GET /gst/compliance/public/pan/search/unlisted?pan=AAACN0255D&state_code=all
-   * Returns unlisted GSTINs from the stored snapshot.
-   * Default searchKey is `all` when state_code is omitted.
-   */
-  @Get('compliance/public/pan/search/unlisted')
-  @Public()
-  async getUnlistedGstinsByPan(
-    @Query('pan') pan?: string,
-    @Query('state_code') stateCode?: string,
-  ) {
-    const data = await this.gstService.getUnlistedGstinsByPan(
+    const data = await this.gstService.getPanSearchByPrimaryPan(
       pan ?? '',
       stateCode,
     );
-    return this.successResponse(
-      'compliance.public.pan-search.unlisted',
-      data,
-    );
+    return this.successResponse('compliance.public.pan-search.get', data);
   }
 
   /**

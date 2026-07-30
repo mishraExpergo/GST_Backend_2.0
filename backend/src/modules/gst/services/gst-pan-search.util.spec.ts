@@ -1,5 +1,5 @@
 import {
-  comparePanSearchWithPrimaryGstins,
+  buildLoanPanSearchResult,
   extractGstinsFromSandboxPayload,
 } from './gst-pan-search.util';
 
@@ -26,16 +26,26 @@ describe('gst-pan-search.util', () => {
         stateCode: '27',
         legalName: 'ACME',
         tradeName: 'Acme Trade',
-        status: 'Active',
-        taxpayerType: 'Regular',
       },
     ]);
   });
 
-  it('tags listed vs unlisted and reports missingFromSandbox', () => {
-    const result = comparePanSearchWithPrimaryGstins(
+  it('builds primary vs considered listed/unlisted blocks', () => {
+    const result = buildLoanPanSearchResult(
       {
-        pan: 'aaacn0255d',
+        loanId: 'LN000001',
+        customerId: 'CUST0001',
+        primaryPan: 'AAACN0255D',
+        primaryGstins: ['27AAACN0255D1ZM'],
+        consideredEntities: [
+          {
+            pan: 'AABCT1234A',
+            gstins: ['29AABCT1234A1Z5'],
+          },
+        ],
+      },
+      {
+        pan: 'AAACN0255D',
         mode: 'single-state',
         stateCode: '27',
         data: {
@@ -43,39 +53,67 @@ describe('gst-pan-search.util', () => {
             {
               data: {
                 gstin: '27AAACN0255D1ZM',
-                lgnm: 'Listed Co',
+                lgnm: 'NTPC Limited',
                 tradeNam: null,
-                sts: 'Active',
-                dty: 'Regular',
               },
             },
             {
               data: {
                 gstin: '27AAACN0255D2ZN',
-                lgnm: 'Unlisted Co',
+                lgnm: 'NTPC Limited',
                 tradeNam: null,
-                sts: 'Active',
-                dty: 'Regular',
               },
             },
           ],
         },
       },
-      ['27AAACN0255D1ZM', '29AAACN0255D1ZA'],
+      new Map([
+        [
+          'AABCT1234A',
+          {
+            pan: 'AABCT1234A',
+            mode: 'single-state',
+            stateCode: '29',
+            data: {
+              data: [
+                {
+                  data: {
+                    gstin: '29AABCT1234A1Z5',
+                    lgnm: 'Secondary Co',
+                    tradeNam: null,
+                  },
+                },
+                {
+                  data: {
+                    gstin: '29AABCT1234A2Z6',
+                    lgnm: 'Secondary Co',
+                    tradeNam: null,
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      ]),
     );
 
-    expect(result.summary).toEqual({
-      primaryGstinCount: 2,
-      sandboxGstinCount: 2,
-      listedCount: 1,
-      unlistedCount: 1,
-      missingFromSandboxCount: 1,
+    expect(result).toEqual({
+      loanId: 'LN000001',
+      customerId: 'CUST0001',
+      primary: {
+        pan: 'AAACN0255D',
+        companyName: 'NTPC Limited',
+        listedGstins: ['27AAACN0255D1ZM'],
+        unlistedGstins: ['27AAACN0255D2ZN'],
+      },
+      consideredEntities: [
+        {
+          pan: 'AABCT1234A',
+          companyName: 'Secondary Co',
+          listedGstins: ['29AABCT1234A1Z5'],
+          unlistedGstins: ['29AABCT1234A2Z6'],
+        },
+      ],
     });
-    expect(result.unlistedGstins.map((g) => g.gstin)).toEqual([
-      '27AAACN0255D2ZN',
-    ]);
-    expect(result.missingFromSandbox).toEqual(['29AAACN0255D1ZA']);
-    expect(result.byState[0].gstins[0].listingStatus).toBe('listed');
-    expect(result.byState[0].gstins[1].listingStatus).toBe('unlisted');
   });
 });

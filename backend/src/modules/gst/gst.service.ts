@@ -18,7 +18,12 @@ import { FileStorageService } from '../shared/services/file-storage.service';
 import {
   GstPanSearchRecord,
 } from './schemas/gst-pan-search.schema';
-import { PanSearchCompareResult } from './services/gst-pan-search.util';
+import {
+  buildLoanPanSearchResult,
+  LoanPanSearchResult,
+  UploadLoanContext,
+} from './services/gst-pan-search.util';
+import { GstApiService } from './services/gst-api.service';
 
 type PgType = 'INTEGER' | 'NUMERIC' | 'TIMESTAMP' | 'BOOLEAN' | 'TEXT';
 
@@ -70,6 +75,7 @@ export class GstService {
     @InjectRepository(Job) private readonly jobRepo: Repository<Job>,
     @InjectRepository(JobTask) private readonly taskRepo: Repository<JobTask>,
     private readonly fileStorageService: FileStorageService,
+    private readonly gstApiService: GstApiService,
     @Optional() @InjectConnection() mongoConnection?: Connection,
     @Optional()
     @InjectModel(GstPanSearchRecord.name)
@@ -1288,133 +1294,352 @@ export class GstService {
   }
 
   /**
-   * Distinct primary GSTINs from gst_uploaded_file_data for a PAN.
+   * Resolve distinct (loanId, customerId) pairs for a primary PAN
+   * from gst_uploaded_file_data.
    */
-  async getPrimaryGstinsByPan(pan: string): Promise<string[]> {
+  async resolveLoanCustomersByPrimaryPan(
+    pan: string,
+  ): Promise<Array<{ loanId: string; customerId: string }>> {
     const normalizedPan = String(pan ?? '')
       .trim()
       .toUpperCase();
     if (!normalizedPan) {
-      return [];
+      throw new BadRequestException('"pan" is required.');
     }
 
-    const rows = await this.dataSource.query<{ gstin: string }[]>(
-      `SELECT DISTINCT UPPER(TRIM(primary_gst_no)) AS gstin
+    const rows = await this.dataSource.query<
+      { loan_id: string | null; customer_id: string | null }[]
+    >(
+      `SELECT DISTINCT
+         NULLIF(TRIM(associated_loan_id), '') AS loan_id,
+         NULLIF(TRIM(customer_id), '') AS customer_id
        FROM public."${GST_UPLOAD_TABLE}"
        WHERE UPPER(TRIM(primary_pan)) = $1
-         AND primary_gst_no IS NOT NULL
-         AND TRIM(primary_gst_no) <> ''`,
+         AND associated_loan_id IS NOT NULL
+         AND TRIM(associated_loan_id) <> ''
+         AND customer_id IS NOT NULL
+         AND TRIM(customer_id) <> ''
+       ORDER BY loan_id, customer_id`,
       [normalizedPan],
     );
 
-    return (rows ?? [])
-      .map((r) => String(r.gstin ?? '').trim().toUpperCase())
-      .filter(Boolean)
-      .sort();
-  }
+    const pairs = (rows ?? [])
+      .map((r) => ({
+        loanId: String(r.loan_id ?? '').trim(),
+        customerId: String(r.customer_id ?? '').trim(),
+      }))
+      .filter((r) => r.loanId && r.customerId);
 
-  /**
-   * Upsert PAN search compare snapshot into MongoDB (`gst_pan_search_data`).
-   * Unique key: pan + searchKey (`all` or state code).
-   */
-  async upsertPanSearchResult(
-    result: PanSearchCompareResult,
-    stateCode?: string | null,
-  ): Promise<{ id: string; pan: string; searchKey: string }> {
-    if (!this.panSearchModel) {
-      throw new ServiceUnavailableException(
-        'MongoDB is not enabled. Set ENABLE_MONGO=true and configure MONGO_URI to store PAN search data.',
+    if (!pairs.length) {
+      throw new BadRequestException(
+        `No loanId/customerId found in upload data for primary_pan=${normalizedPan}.`,
       );
     }
 
-    const pan = String(result.pan ?? '')
+    return pairs;
+  }
+
+  /**
+   * Load primary + considered-entity PANs/GSTINs for a loan + customer
+   * from gst_uploaded_file_data.
+   */
+  async getUploadLoanContext(
+    loanId: string,
+    customerId: string,
+  ): Promise<UploadLoanContext> {
+    const normalizedLoanId = String(loanId ?? '').trim();
+    const normalizedCustomerId = String(customerId ?? '').trim();
+    if (!normalizedLoanId || !normalizedCustomerId) {
+      throw new BadRequestException(
+        '"loanId" and "customerId" are required.',
+      );
+    }
+
+    const rows = await this.dataSource.query<
+      {
+        primary_pan: string | null;
+        primary_gst_no: string | null;
+        considered_entity_pan: string | null;
+        considered_entity_gst_no: string | null;
+      }[]
+    >(
+      `SELECT primary_pan, primary_gst_no,
+              considered_entity_pan, considered_entity_gst_no
+       FROM public."${GST_UPLOAD_TABLE}"
+       WHERE TRIM(associated_loan_id) = TRIM($1)
+         AND TRIM(customer_id) = TRIM($2)`,
+      [normalizedLoanId, normalizedCustomerId],
+    );
+
+    if (!rows?.length) {
+      throw new BadRequestException(
+        `No upload rows found for loanId=${normalizedLoanId}, customerId=${normalizedCustomerId}.`,
+      );
+    }
+
+    const primaryGstins = new Set<string>();
+    let primaryPan: string | null = null;
+    const consideredMap = new Map<string, Set<string>>();
+
+    for (const row of rows) {
+      const pPan = String(row.primary_pan ?? '')
+        .trim()
+        .toUpperCase();
+      if (pPan && !primaryPan) {
+        primaryPan = pPan;
+      }
+      const pGst = String(row.primary_gst_no ?? '')
+        .trim()
+        .toUpperCase();
+      if (pGst) {
+        primaryGstins.add(pGst);
+      }
+
+      const cPan = String(row.considered_entity_pan ?? '')
+        .trim()
+        .toUpperCase();
+      if (!cPan) continue;
+      if (!consideredMap.has(cPan)) {
+        consideredMap.set(cPan, new Set());
+      }
+      const cGst = String(row.considered_entity_gst_no ?? '')
+        .trim()
+        .toUpperCase();
+      if (cGst) {
+        consideredMap.get(cPan)!.add(cGst);
+      }
+    }
+
+    return {
+      loanId: normalizedLoanId,
+      customerId: normalizedCustomerId,
+      primaryPan,
+      primaryGstins: [...primaryGstins].sort(),
+      consideredEntities: [...consideredMap.entries()]
+        .map(([pan, gstins]) => ({
+          pan,
+          gstins: [...gstins].sort(),
+        }))
+        .sort((a, b) => a.pan.localeCompare(b.pan)),
+    };
+  }
+
+  /**
+   * Resolve loan/customer from upload by primary PAN, then Sandbox-search
+   * primary + considered-entity PANs for each pair.
+   */
+  async searchPanByPrimaryPan(pan: string, stateCode?: string | null) {
+    const normalizedPan = String(pan ?? '')
       .trim()
       .toUpperCase();
-    const trimmedState = String(stateCode ?? '').trim();
-    const searchKey =
-      result.mode === 'single-state'
-        ? trimmedState.padStart(2, '0') || 'unknown'
-        : 'all';
+    const pairs = await this.resolveLoanCustomersByPrimaryPan(normalizedPan);
+    const items = await Promise.all(
+      pairs.map(({ loanId, customerId }) =>
+        this.searchPanForLoanCustomer(loanId, customerId, stateCode),
+      ),
+    );
+    return {
+      pan: normalizedPan,
+      count: items.length,
+      items,
+    };
+  }
 
-    const doc = await this.panSearchModel.findOneAndUpdate(
-      { pan, searchKey },
+  /**
+   * Sandbox PAN search for primary + each considered-entity PAN, then tag
+   * listed/unlisted against upload GSTINs for this loan/customer.
+   */
+  async searchPanForLoanCustomer(
+    loanId: string,
+    customerId: string,
+    stateCode?: string | null,
+  ): Promise<
+    LoanPanSearchResult & {
+      stored: {
+        id: string;
+        loanId: string;
+        customerId: string;
+        searchKey: string;
+      };
+    }
+  > {
+    const context = await this.getUploadLoanContext(loanId, customerId);
+
+    const pansToSearch = [
+      ...(context.primaryPan ? [context.primaryPan] : []),
+      ...context.consideredEntities.map((e) => e.pan),
+    ];
+    const uniquePans = [...new Set(pansToSearch)];
+
+    const sandboxByPan = new Map<string, Record<string, any>>();
+    await Promise.all(
+      uniquePans.map(async (pan) => {
+        try {
+          const data = await this.gstApiService.searchPan(pan, stateCode);
+          sandboxByPan.set(pan, data);
+        } catch (err) {
+          this.logger.warn(
+            `PAN search failed for pan=${pan}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+          sandboxByPan.set(pan, {
+            pan,
+            mode: stateCode ? 'single-state' : 'all-states',
+            stateCode: stateCode ?? undefined,
+            results: [],
+            data: { error_code: 'SEARCH_FAILED', message: String(err) },
+          });
+        }
+      }),
+    );
+
+    const primarySandbox = context.primaryPan
+      ? sandboxByPan.get(context.primaryPan) ?? null
+      : null;
+    const consideredSandboxByPan = new Map<string, Record<string, any>>();
+    for (const entity of context.consideredEntities) {
+      const sandbox = sandboxByPan.get(entity.pan);
+      if (sandbox) {
+        consideredSandboxByPan.set(entity.pan, sandbox);
+      }
+    }
+
+    const result = buildLoanPanSearchResult(
+      context,
+      primarySandbox,
+      consideredSandboxByPan,
+    );
+    const stored = await this.upsertLoanPanSearchResult(result, stateCode);
+    return { ...result, stored };
+  }
+
+  /**
+   * Upsert loan/customer PAN-search snapshot into MongoDB.
+   * Unique key: loanId + customerId + searchKey.
+   */
+  async upsertLoanPanSearchResult(
+    result: LoanPanSearchResult,
+    stateCode?: string | null,
+  ): Promise<{
+    id: string;
+    loanId: string;
+    customerId: string;
+    searchKey: string;
+  }> {
+    const model = this.requirePanSearchModel();
+    const loanId = String(result.loanId ?? '').trim();
+    const customerId = String(result.customerId ?? '').trim();
+    if (!loanId || !customerId) {
+      throw new BadRequestException(
+        'Cannot store PAN search without loanId and customerId.',
+      );
+    }
+    const searchKey = this.resolvePanSearchKey(stateCode);
+    const pan = String(result.primary?.pan ?? '')
+      .trim()
+      .toUpperCase();
+
+    // Legacy pan-only rows / failed upserts left loanId+customerId null, which
+    // occupies the unique index slot { null, null, searchKey } and blocks writes.
+    await this.cleanupLegacyPanSearchOrphans(model);
+
+    const payload: LoanPanSearchResult = {
+      loanId,
+      customerId,
+      primary: result.primary,
+      consideredEntities: result.consideredEntities ?? [],
+    };
+
+    const doc = await model.findOneAndUpdate(
+      { loanId, customerId, searchKey },
       {
         $set: {
-          pan,
+          pan: pan || undefined,
+          loanId,
+          customerId,
           searchKey,
-          mode: result.mode,
-          summary: result.summary,
-          primaryGstins: result.primaryGstins,
-          byState: result.byState,
-          unlistedGstins: result.unlistedGstins,
-          missingFromSandbox: result.missingFromSandbox,
-          failedStates: result.failedStates,
-          skippedStateCodes: result.skippedStateCodes ?? [],
-          payload: result,
+          primary: payload.primary,
+          consideredEntities: payload.consideredEntities,
+          payload,
         },
       },
-      { upsert: true, new: true },
+      { upsert: true, new: true, runValidators: true },
     );
 
     return {
       id: String(doc._id),
-      pan,
+      loanId,
+      customerId,
       searchKey,
     };
+  }
+
+  private async cleanupLegacyPanSearchOrphans(
+    model: Model<GstPanSearchRecord>,
+  ): Promise<void> {
+    try {
+      await model.collection.dropIndex('pan_1_searchKey_1');
+    } catch {
+      // Index may not exist on fresh DBs.
+    }
+
+    await model.deleteMany({
+      $or: [
+        { loanId: null },
+        { customerId: null },
+        { loanId: { $exists: false } },
+        { customerId: { $exists: false } },
+        { loanId: '' },
+        { customerId: '' },
+      ],
+    });
   }
 
   private requirePanSearchModel(): Model<GstPanSearchRecord> {
     if (!this.panSearchModel) {
       throw new ServiceUnavailableException(
-        'MongoDB is not enabled. Set ENABLE_MONGO=true and configure MONGO_URI to read PAN search data.',
+        'MongoDB is not enabled. Set ENABLE_MONGO=true and configure MONGO_URI to store PAN search data.',
       );
     }
     return this.panSearchModel;
   }
 
-  private normalizePanSearchKey(stateCode?: string | null): string | undefined {
+  private resolvePanSearchKey(stateCode?: string | null): string {
     const trimmed = String(stateCode ?? '').trim();
-    if (!trimmed) {
-      return undefined;
-    }
-    if (trimmed.toLowerCase() === 'all') {
+    if (!trimmed || trimmed.toLowerCase() === 'all') {
       return 'all';
     }
     return trimmed.padStart(2, '0');
   }
 
-  private serializePanSearchDoc(doc: GstPanSearchRecord & { _id?: any; createdAt?: Date; updatedAt?: Date }) {
+  private serializeLoanPanSearchDoc(
+    doc: GstPanSearchRecord & {
+      _id?: any;
+      pan?: string;
+      createdAt?: Date;
+      updatedAt?: Date;
+    },
+  ) {
     return {
       id: String(doc._id),
-      pan: doc.pan,
+      pan: doc.pan ?? doc.primary?.pan ?? null,
+      loanId: doc.loanId,
+      customerId: doc.customerId,
       searchKey: doc.searchKey,
-      mode: doc.mode,
-      summary: doc.summary ?? null,
-      primaryGstins: doc.primaryGstins ?? [],
-      byState: doc.byState ?? [],
-      unlistedGstins: doc.unlistedGstins ?? [],
-      missingFromSandbox: doc.missingFromSandbox ?? [],
-      failedStates: doc.failedStates ?? [],
-      skippedStateCodes: doc.skippedStateCodes ?? [],
+      primary: doc.primary ?? null,
+      consideredEntities: doc.consideredEntities ?? [],
       createdAt: doc.createdAt ?? null,
       updatedAt: doc.updatedAt ?? null,
     };
   }
 
   /**
-   * Read stored PAN search snapshot(s) from MongoDB.
-   * - With state_code / searchKey: one document (or null).
-   * - Without: all documents for the PAN.
+   * Read stored PAN-search snapshot(s) from MongoDB by primary PAN.
+   * Looks up documents via primary.pan (and top-level pan), not only
+   * loanId/customerId — so GET works even if upload loan mapping drifted.
    */
-  async getPanSearchByPan(
-    pan: string,
-    stateCode?: string | null,
-  ): Promise<{
-    pan: string;
-    searchKey: string | null;
-    count: number;
-    items: ReturnType<GstService['serializePanSearchDoc']>[];
-  }> {
+  async getPanSearchByPrimaryPan(pan: string, stateCode?: string | null) {
     const model = this.requirePanSearchModel();
     const normalizedPan = String(pan ?? '')
       .trim()
@@ -1423,8 +1648,18 @@ export class GstService {
       throw new BadRequestException('Query parameter "pan" is required.');
     }
 
-    const searchKey = this.normalizePanSearchKey(stateCode);
-    const filter: Record<string, string> = { pan: normalizedPan };
+    const trimmedState = String(stateCode ?? '').trim();
+    const searchKey = trimmedState
+      ? this.resolvePanSearchKey(trimmedState)
+      : null;
+
+    const filter: Record<string, any> = {
+      $or: [
+        { pan: normalizedPan },
+        { 'primary.pan': normalizedPan },
+        { 'payload.primary.pan': normalizedPan },
+      ],
+    };
     if (searchKey) {
       filter.searchKey = searchKey;
     }
@@ -1435,50 +1670,39 @@ export class GstService {
       .lean()
       .exec();
 
-    return {
-      pan: normalizedPan,
-      searchKey: searchKey ?? null,
-      count: docs.length,
-      items: docs.map((d) => this.serializePanSearchDoc(d as any)),
-    };
-  }
+    const items = docs.map((d) => this.serializeLoanPanSearchDoc(d as any));
 
-  /**
-   * Unlisted GSTINs from the latest matching stored PAN search.
-   * Prefers searchKey=all when state_code omitted; otherwise the given state.
-   */
-  async getUnlistedGstinsByPan(
-    pan: string,
-    stateCode?: string | null,
-  ): Promise<{
-    pan: string;
-    searchKey: string;
-    unlistedGstins: Record<string, any>[];
-    summary: Record<string, number> | null;
-    updatedAt: Date | null;
-  }> {
-    const model = this.requirePanSearchModel();
-    const normalizedPan = String(pan ?? '')
-      .trim()
-      .toUpperCase();
-    if (!normalizedPan) {
-      throw new BadRequestException('Query parameter "pan" is required.');
-    }
-
-    const searchKey = this.normalizePanSearchKey(stateCode) ?? 'all';
-    const doc = await model.findOne({ pan: normalizedPan, searchKey }).lean().exec();
-    if (!doc) {
-      throw new BadRequestException(
-        `No stored PAN search found for pan=${normalizedPan}, searchKey=${searchKey}. Run POST /gst/compliance/public/pan/search first.`,
-      );
+    // If nothing stored yet, still surface loan/customer from upload so the
+    // client knows the PAN is mapped and needs a POST to populate snapshots.
+    if (!items.length) {
+      let pairs: Array<{ loanId: string; customerId: string }> = [];
+      try {
+        pairs = await this.resolveLoanCustomersByPrimaryPan(normalizedPan);
+      } catch {
+        pairs = [];
+      }
+      return {
+        pan: normalizedPan,
+        searchKey,
+        stored: false,
+        count: pairs.length,
+        items: pairs.map(({ loanId, customerId }) => ({
+          loanId,
+          customerId,
+          searchKey,
+          primary: null,
+          consideredEntities: [],
+          stored: false,
+        })),
+      };
     }
 
     return {
       pan: normalizedPan,
       searchKey,
-      unlistedGstins: (doc as any).unlistedGstins ?? [],
-      summary: (doc as any).summary ?? null,
-      updatedAt: (doc as any).updatedAt ?? null,
+      stored: true,
+      count: items.length,
+      items,
     };
   }
 
