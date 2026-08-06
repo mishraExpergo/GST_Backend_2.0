@@ -17,7 +17,7 @@ In product language and **API responses**, the former "considered entity" / "sec
 | `CONSIDERED_*` metric keys | `COAPPLICANT_*` metric keys |
 | `CONSIDERED_ENTITY` | `COAPPLICANT_ENTITY` |
 | `type=secondary` on aggregation | `type=coapplicant` (`secondary` still accepted) |
-| `coapplicant_entity_pan` (API) | mapped from DB column `considered_entity_pan` |
+| `considered_state` / `considered_consent_available` / any `*considered*` | Remapped automatically in **all** `/gst/*` HTTP responses via `CoapplicantTerminologyInterceptor` (keys + string values). DB column names stay unchanged. |
 
 **Not renamed yet (DB stays as-is):** Postgres tables `secondary_gst_aggregation` / `secondary_gst_aggregation_history`, and upload columns `considered_entity_pan` / `considered_entity_gst_no`. The API remaps these after fetch.
 

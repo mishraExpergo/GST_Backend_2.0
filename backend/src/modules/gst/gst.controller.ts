@@ -34,8 +34,10 @@ import {
 import { FileStorageService } from '../shared/services/file-storage.service';
 import type { ApiRequestStatus } from '../../entities/api-request-log.entity';
 import { Public } from '../../auth/public.decorator';
+import { CoapplicantTerminologyInterceptor } from './interceptors/coapplicant-terminology.interceptor';
 
 @Controller('gst')
+@UseInterceptors(CoapplicantTerminologyInterceptor)
 export class GstController {
   constructor(
     private readonly gstService: GstService,
