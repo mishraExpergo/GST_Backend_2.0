@@ -9,7 +9,7 @@ export interface LoanPanSearchResult {
   loanId: string;
   customerId: string;
   primary: EntityPanSearchBlock | null;
-  consideredEntities: EntityPanSearchBlock[];
+  coapplicantEntities: EntityPanSearchBlock[];
 }
 
 export interface UploadLoanContext {
@@ -17,8 +17,8 @@ export interface UploadLoanContext {
   customerId: string;
   primaryPan: string | null;
   primaryGstins: string[];
-  /** Distinct considered-entity PANs with their uploaded GSTINs. */
-  consideredEntities: Array<{
+  /** Distinct coapplicant-entity PANs with their uploaded GSTINs. */
+  coapplicantEntities: Array<{
     pan: string;
     gstins: string[];
   }>;
@@ -194,7 +194,7 @@ export function buildEntityPanBlock(
 export function buildLoanPanSearchResult(
   context: UploadLoanContext,
   primarySandbox: Record<string, any> | null,
-  consideredSandboxByPan: Map<string, Record<string, any>>,
+  coapplicantSandboxByPan: Map<string, Record<string, any>>,
 ): LoanPanSearchResult {
   const primary =
     context.primaryPan && primarySandbox
@@ -212,8 +212,8 @@ export function buildLoanPanSearchResult(
           }
         : null;
 
-  const consideredEntities = context.consideredEntities.map((entity) => {
-    const sandbox = consideredSandboxByPan.get(entity.pan) ?? null;
+  const coapplicantEntities = context.coapplicantEntities.map((entity) => {
+    const sandbox = coapplicantSandboxByPan.get(entity.pan) ?? null;
     return buildEntityPanBlock(
       entity.pan,
       sandbox ? collectSandboxGstins(sandbox) : [],
@@ -225,6 +225,6 @@ export function buildLoanPanSearchResult(
     loanId: context.loanId,
     customerId: context.customerId,
     primary,
-    consideredEntities,
+    coapplicantEntities,
   };
 }

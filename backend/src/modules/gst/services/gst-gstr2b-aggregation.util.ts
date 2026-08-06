@@ -1,5 +1,6 @@
 import { Gstr2bComplianceRecord } from '../schemas/gst-gstr2b-compliance.schema';
-import { CONSIDERED_GSTR2B_SUPPLIER_METRIC_KEYS as CONSIDERED_GSTR2B_SUPPLIER_METRIC_KEYS_FROM_VAR } from './gst-aggregation-variable.util';
+import { COAPPLICANT_GSTR2B_SUPPLIER_METRIC_KEYS as COAPPLICANT_GSTR2B_SUPPLIER_METRIC_KEYS_FROM_VAR } from './gst-aggregation-variable.util';
+import { isCoapplicantEntityType } from './gst-terminology.util';
 
 export interface PrimaryGstr2bAggregationMetrics {
   PRIMARY_TOTAL_SUPPLIER_COUNT: number;
@@ -16,26 +17,30 @@ export interface PrimaryGstr2bAggregationMetrics {
 }
 
 /**
- * Loan-level considered-supplier metrics written to secondary_gst_aggregation
- * after GSTR-2B aggregation (see Considered_Supplier_Metrics_Logic.docx).
+ * Loan-level coapplicant-supplier metrics written to secondary_gst_aggregation
+ * after GSTR-2B aggregation.
  */
-export interface ConsideredSupplierGstr2bAggregationMetrics {
-  CONSIDERED_TOTAL_SUPPLIER_COUNT: number;
-  CONSIDERED_SUPPLIER_TOTAL_INELIGIBLE_ITC: number;
-  CONSIDERED_SUPPLIER_TOTAL_REVERSED_ITC: number;
-  CONSIDERED_SUPPLIER_TOTAL_ELIGIBLE_ITC: number;
-  CONSIDERED_SUPPLIER_TOTAL_INVOICE_COUNT: number;
-  CONSIDERED_SUPPLIER_ELIGIBLE_INVOICE_COUNT: number;
-  CONSIDERED_SUPPLIER_INELIGIBLE_INVOICE_COUNT: number;
-  CONSIDERED_SUPPLIER_IGST_ITC: number;
-  CONSIDERED_SUPPLIER_CGST_ITC: number;
-  CONSIDERED_SUPPLIER_SGST_ITC: number;
-  CONSIDERED_SUPPLIER_CESS_ITC: number;
+export interface CoapplicantSupplierGstr2bAggregationMetrics {
+  COAPPLICANT_TOTAL_SUPPLIER_COUNT: number;
+  COAPPLICANT_SUPPLIER_TOTAL_INELIGIBLE_ITC: number;
+  COAPPLICANT_SUPPLIER_TOTAL_REVERSED_ITC: number;
+  COAPPLICANT_SUPPLIER_TOTAL_ELIGIBLE_ITC: number;
+  COAPPLICANT_SUPPLIER_TOTAL_INVOICE_COUNT: number;
+  COAPPLICANT_SUPPLIER_ELIGIBLE_INVOICE_COUNT: number;
+  COAPPLICANT_SUPPLIER_INELIGIBLE_INVOICE_COUNT: number;
+  COAPPLICANT_SUPPLIER_IGST_ITC: number;
+  COAPPLICANT_SUPPLIER_CGST_ITC: number;
+  COAPPLICANT_SUPPLIER_SGST_ITC: number;
+  COAPPLICANT_SUPPLIER_CESS_ITC: number;
 }
 
-/** @deprecated Prefer ConsideredSupplierGstr2bAggregationMetrics */
-export type SecondaryGstr2bAggregationMetrics =
-  ConsideredSupplierGstr2bAggregationMetrics;
+/** @deprecated Prefer CoapplicantSupplierGstr2bAggregationMetrics */
+export type CoapplicantGstr2bAggregationMetrics =
+  CoapplicantSupplierGstr2bAggregationMetrics;
+
+/** @deprecated Prefer CoapplicantSupplierGstr2bAggregationMetrics */
+export type ConsideredSupplierGstr2bAggregationMetrics =
+  CoapplicantSupplierGstr2bAggregationMetrics;
 
 export const PRIMARY_GSTR2B_METRIC_KEYS = [
   'PRIMARY_TOTAL_SUPPLIER_COUNT',
@@ -51,11 +56,11 @@ export const PRIMARY_GSTR2B_METRIC_KEYS = [
   'PRIMARY_INELIGIBLE_INVOICE_COUNT',
 ] as const;
 
-export const CONSIDERED_GSTR2B_SUPPLIER_METRIC_KEYS =
-  CONSIDERED_GSTR2B_SUPPLIER_METRIC_KEYS_FROM_VAR;
+export const COAPPLICANT_GSTR2B_SUPPLIER_METRIC_KEYS =
+  COAPPLICANT_GSTR2B_SUPPLIER_METRIC_KEYS_FROM_VAR;
 
-/** @deprecated Prefer CONSIDERED_GSTR2B_SUPPLIER_METRIC_KEYS */
-export const SECONDARY_GSTR2B_METRIC_KEYS = CONSIDERED_GSTR2B_SUPPLIER_METRIC_KEYS;
+/** @deprecated Prefer COAPPLICANT_GSTR2B_SUPPLIER_METRIC_KEYS */
+export const COAPPLICANT_GSTR2B_METRIC_KEYS_LEGACY = COAPPLICANT_GSTR2B_SUPPLIER_METRIC_KEYS;
 
 interface InvoiceMetricFact {
   supplierGstin: string | null;
@@ -76,8 +81,8 @@ interface TraversalContext {
   itcEligibility: 'ELIGIBLE' | 'INELIGIBLE' | null;
 }
 
-/** Per Considered Entity PAN supplier metrics (before loan roll-up). */
-export interface ConsideredEntityPanSupplierMetrics {
+/** Per coapplicant-entity PAN supplier metrics (before loan roll-up). */
+export interface CoapplicantEntityPanSupplierMetrics {
   totalSupplierCount: number;
   totalIneligibleItc: number;
   totalReversedItc: number;
@@ -140,44 +145,43 @@ export function computePrimaryGstr2bAggregationMetrics(
 }
 
 /**
- * Per Considered Entity PAN metrics from that PAN's GSTR-2B docs.
- * Matches the per-entity step in Considered_Supplier_Metrics_Logic.docx.
+ * Per coapplicant-entity PAN metrics from that PAN's GSTR-2B docs.
  */
-export function computeConsideredEntityPanSupplierMetrics(
+export function computeCoapplicantEntityPanSupplierMetrics(
   panRecords: Array<Gstr2bComplianceRecord | Record<string, any>>,
-): ConsideredEntityPanSupplierMetrics {
+): CoapplicantEntityPanSupplierMetrics {
   return computePanSummary(panRecords);
 }
 
 /**
- * Loan-level CONSIDERED_* supplier metrics:
+ * Loan-level COAPPLICANT_* supplier metrics:
  *
- * 1. For each Considered Entity PAN (non-empty), compute entity-level metrics
+ * 1. For each coapplicant-entity PAN (non-empty), compute entity-level metrics
  *    from that PAN's GSTR-2B records on the loan.
- * 2. SUM those entity-level values across all Considered Entity PANs for the
+ * 2. SUM those entity-level values across all coapplicant-entity PANs for the
  *    same associated_loan_id.
  */
-export function computeLoanLevelConsideredSupplierMetrics(
-  consideredEntityPans: string[],
+export function computeLoanLevelCoapplicantSupplierMetrics(
+  coapplicantEntityPans: string[],
   loanGstr2bRecords: Array<Gstr2bComplianceRecord | Record<string, any>>,
-): ConsideredSupplierGstr2bAggregationMetrics {
-  const empty: ConsideredSupplierGstr2bAggregationMetrics = {
-    CONSIDERED_TOTAL_SUPPLIER_COUNT: 0,
-    CONSIDERED_SUPPLIER_TOTAL_INELIGIBLE_ITC: 0,
-    CONSIDERED_SUPPLIER_TOTAL_REVERSED_ITC: 0,
-    CONSIDERED_SUPPLIER_TOTAL_ELIGIBLE_ITC: 0,
-    CONSIDERED_SUPPLIER_TOTAL_INVOICE_COUNT: 0,
-    CONSIDERED_SUPPLIER_ELIGIBLE_INVOICE_COUNT: 0,
-    CONSIDERED_SUPPLIER_INELIGIBLE_INVOICE_COUNT: 0,
-    CONSIDERED_SUPPLIER_IGST_ITC: 0,
-    CONSIDERED_SUPPLIER_CGST_ITC: 0,
-    CONSIDERED_SUPPLIER_SGST_ITC: 0,
-    CONSIDERED_SUPPLIER_CESS_ITC: 0,
+): CoapplicantSupplierGstr2bAggregationMetrics {
+  const empty: CoapplicantSupplierGstr2bAggregationMetrics = {
+    COAPPLICANT_TOTAL_SUPPLIER_COUNT: 0,
+    COAPPLICANT_SUPPLIER_TOTAL_INELIGIBLE_ITC: 0,
+    COAPPLICANT_SUPPLIER_TOTAL_REVERSED_ITC: 0,
+    COAPPLICANT_SUPPLIER_TOTAL_ELIGIBLE_ITC: 0,
+    COAPPLICANT_SUPPLIER_TOTAL_INVOICE_COUNT: 0,
+    COAPPLICANT_SUPPLIER_ELIGIBLE_INVOICE_COUNT: 0,
+    COAPPLICANT_SUPPLIER_INELIGIBLE_INVOICE_COUNT: 0,
+    COAPPLICANT_SUPPLIER_IGST_ITC: 0,
+    COAPPLICANT_SUPPLIER_CGST_ITC: 0,
+    COAPPLICANT_SUPPLIER_SGST_ITC: 0,
+    COAPPLICANT_SUPPLIER_CESS_ITC: 0,
   };
 
   const pans = Array.from(
     new Set(
-      consideredEntityPans
+      coapplicantEntityPans
         .map((pan) => normalizePan(pan))
         .filter((pan): pan is string => Boolean(pan)),
     ),
@@ -187,12 +191,12 @@ export function computeLoanLevelConsideredSupplierMetrics(
     return empty;
   }
 
-  // Prefer CONSIDERED_ENTITY docs when entityType is present.
-  const consideredScopedRecords = loanGstr2bRecords.filter((record) => {
+  // Prefer COAPPLICANT_ENTITY (or legacy CONSIDERED_ENTITY) docs when entityType is present.
+  const coapplicantScopedRecords = loanGstr2bRecords.filter((record) => {
     const entityType = String(record.entityType ?? '')
       .trim()
       .toUpperCase();
-    return !entityType || entityType === 'CONSIDERED_ENTITY';
+    return !entityType || isCoapplicantEntityType(entityType);
   });
 
   let totalSupplierCount = 0;
@@ -208,10 +212,10 @@ export function computeLoanLevelConsideredSupplierMetrics(
   let cessItc = 0;
 
   for (const pan of pans) {
-    const panRecords = getGstr2bRecordsForPan(consideredScopedRecords, pan);
-    const entityMetrics = computeConsideredEntityPanSupplierMetrics(panRecords);
+    const panRecords = getGstr2bRecordsForPan(coapplicantScopedRecords, pan);
+    const entityMetrics = computeCoapplicantEntityPanSupplierMetrics(panRecords);
 
-    // SUM(COUNT(DISTINCT supplier_gstin ...)) across Considered Entity PANs
+    // SUM(COUNT(DISTINCT supplier_gstin ...)) across coapplicant-entity PANs
     totalSupplierCount += entityMetrics.totalSupplierCount;
     // SUM(ineligible_itc / reversed_itc / eligible_itc / tax ITCs) across PANs
     totalIneligibleItc += entityMetrics.totalIneligibleItc;
@@ -228,45 +232,56 @@ export function computeLoanLevelConsideredSupplierMetrics(
   }
 
   return {
-    CONSIDERED_TOTAL_SUPPLIER_COUNT: totalSupplierCount,
-    CONSIDERED_SUPPLIER_TOTAL_INELIGIBLE_ITC: round2(totalIneligibleItc),
-    CONSIDERED_SUPPLIER_TOTAL_REVERSED_ITC: round2(totalReversedItc),
-    CONSIDERED_SUPPLIER_TOTAL_ELIGIBLE_ITC: round2(totalEligibleItc),
-    CONSIDERED_SUPPLIER_TOTAL_INVOICE_COUNT: totalInvoiceCount,
-    CONSIDERED_SUPPLIER_ELIGIBLE_INVOICE_COUNT: eligibleInvoiceCount,
-    CONSIDERED_SUPPLIER_INELIGIBLE_INVOICE_COUNT: ineligibleInvoiceCount,
-    CONSIDERED_SUPPLIER_IGST_ITC: round2(igstItc),
-    CONSIDERED_SUPPLIER_CGST_ITC: round2(cgstItc),
-    CONSIDERED_SUPPLIER_SGST_ITC: round2(sgstItc),
-    CONSIDERED_SUPPLIER_CESS_ITC: round2(cessItc),
+    COAPPLICANT_TOTAL_SUPPLIER_COUNT: totalSupplierCount,
+    COAPPLICANT_SUPPLIER_TOTAL_INELIGIBLE_ITC: round2(totalIneligibleItc),
+    COAPPLICANT_SUPPLIER_TOTAL_REVERSED_ITC: round2(totalReversedItc),
+    COAPPLICANT_SUPPLIER_TOTAL_ELIGIBLE_ITC: round2(totalEligibleItc),
+    COAPPLICANT_SUPPLIER_TOTAL_INVOICE_COUNT: totalInvoiceCount,
+    COAPPLICANT_SUPPLIER_ELIGIBLE_INVOICE_COUNT: eligibleInvoiceCount,
+    COAPPLICANT_SUPPLIER_INELIGIBLE_INVOICE_COUNT: ineligibleInvoiceCount,
+    COAPPLICANT_SUPPLIER_IGST_ITC: round2(igstItc),
+    COAPPLICANT_SUPPLIER_CGST_ITC: round2(cgstItc),
+    COAPPLICANT_SUPPLIER_SGST_ITC: round2(sgstItc),
+    COAPPLICANT_SUPPLIER_CESS_ITC: round2(cessItc),
   };
 }
 
-/** @deprecated Prefer computeLoanLevelConsideredSupplierMetrics */
+/** @deprecated Prefer computeLoanLevelCoapplicantSupplierMetrics */
+export function computeLoanLevelConsideredSupplierMetrics(
+  coapplicantEntityPans: string[],
+  loanGstr2bRecords: Array<Gstr2bComplianceRecord | Record<string, any>>,
+): CoapplicantSupplierGstr2bAggregationMetrics {
+  return computeLoanLevelCoapplicantSupplierMetrics(
+    coapplicantEntityPans,
+    loanGstr2bRecords,
+  );
+}
+
+/** @deprecated Prefer computeLoanLevelCoapplicantSupplierMetrics */
 export function computeConsideredGstr2bAggregationMetricsForPans(
   pans: string[],
   allRecords: Array<Gstr2bComplianceRecord | Record<string, any>>,
-): ConsideredSupplierGstr2bAggregationMetrics {
-  return computeLoanLevelConsideredSupplierMetrics(pans, allRecords);
+): CoapplicantSupplierGstr2bAggregationMetrics {
+  return computeLoanLevelCoapplicantSupplierMetrics(pans, allRecords);
 }
 
-/** @deprecated Prefer computeLoanLevelConsideredSupplierMetrics for loan roll-up */
-export function computeSecondaryGstr2bAggregationMetrics(
+/** @deprecated Prefer computeLoanLevelCoapplicantSupplierMetrics for loan roll-up */
+export function computeCoapplicantGstr2bAggregationMetrics(
   records: Array<Gstr2bComplianceRecord | Record<string, any>>,
-): ConsideredSupplierGstr2bAggregationMetrics {
+): CoapplicantSupplierGstr2bAggregationMetrics {
   const summary = computePanSummary(records);
   return {
-    CONSIDERED_TOTAL_SUPPLIER_COUNT: summary.totalSupplierCount,
-    CONSIDERED_SUPPLIER_TOTAL_INELIGIBLE_ITC: round2(summary.totalIneligibleItc),
-    CONSIDERED_SUPPLIER_TOTAL_REVERSED_ITC: round2(summary.totalReversedItc),
-    CONSIDERED_SUPPLIER_TOTAL_ELIGIBLE_ITC: round2(summary.totalEligibleItc),
-    CONSIDERED_SUPPLIER_TOTAL_INVOICE_COUNT: summary.totalInvoiceCount,
-    CONSIDERED_SUPPLIER_ELIGIBLE_INVOICE_COUNT: summary.eligibleInvoiceCount,
-    CONSIDERED_SUPPLIER_INELIGIBLE_INVOICE_COUNT: summary.ineligibleInvoiceCount,
-    CONSIDERED_SUPPLIER_IGST_ITC: round2(summary.igstItc),
-    CONSIDERED_SUPPLIER_CGST_ITC: round2(summary.cgstItc),
-    CONSIDERED_SUPPLIER_SGST_ITC: round2(summary.sgstItc),
-    CONSIDERED_SUPPLIER_CESS_ITC: round2(summary.cessItc),
+    COAPPLICANT_TOTAL_SUPPLIER_COUNT: summary.totalSupplierCount,
+    COAPPLICANT_SUPPLIER_TOTAL_INELIGIBLE_ITC: round2(summary.totalIneligibleItc),
+    COAPPLICANT_SUPPLIER_TOTAL_REVERSED_ITC: round2(summary.totalReversedItc),
+    COAPPLICANT_SUPPLIER_TOTAL_ELIGIBLE_ITC: round2(summary.totalEligibleItc),
+    COAPPLICANT_SUPPLIER_TOTAL_INVOICE_COUNT: summary.totalInvoiceCount,
+    COAPPLICANT_SUPPLIER_ELIGIBLE_INVOICE_COUNT: summary.eligibleInvoiceCount,
+    COAPPLICANT_SUPPLIER_INELIGIBLE_INVOICE_COUNT: summary.ineligibleInvoiceCount,
+    COAPPLICANT_SUPPLIER_IGST_ITC: round2(summary.igstItc),
+    COAPPLICANT_SUPPLIER_CGST_ITC: round2(summary.cgstItc),
+    COAPPLICANT_SUPPLIER_SGST_ITC: round2(summary.sgstItc),
+    COAPPLICANT_SUPPLIER_CESS_ITC: round2(summary.cessItc),
   };
 }
 
@@ -278,7 +293,7 @@ export function computeSecondaryGstr2bAggregationMetrics(
  */
 function computePanSummary(
   records: Array<Gstr2bComplianceRecord | Record<string, any>>,
-): ConsideredEntityPanSupplierMetrics {
+): CoapplicantEntityPanSupplierMetrics {
   const facts = records.flatMap((record) =>
     extractInvoiceFacts(record.gstr2bResponse ?? record),
   );

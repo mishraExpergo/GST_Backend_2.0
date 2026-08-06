@@ -6,13 +6,17 @@ export interface PrimaryGstrTrackAggregationMetrics {
   PRIMARY_ONTIME_RETURN_COUNT: number;
 }
 
-export interface ConsideredGstrTrackAggregationMetrics {
-  CONSIDERED_TOTAL_RETURN_PERIODS: number;
-  CONSIDERED_FILED_RETURN_COUNT: number;
-  CONSIDERED_NON_FILED_RETURN_COUNT: number;
-  CONSIDERED_DELAYED_RETURN_COUNT: number;
-  CONSIDERED_ONTIME_RETURN_COUNT: number;
+export interface CoapplicantGstrTrackAggregationMetrics {
+  COAPPLICANT_TOTAL_RETURN_PERIODS: number;
+  COAPPLICANT_FILED_RETURN_COUNT: number;
+  COAPPLICANT_NON_FILED_RETURN_COUNT: number;
+  COAPPLICANT_DELAYED_RETURN_COUNT: number;
+  COAPPLICANT_ONTIME_RETURN_COUNT: number;
 }
+
+/** @deprecated Prefer CoapplicantGstrTrackAggregationMetrics */
+export type ConsideredGstrTrackAggregationMetrics =
+  CoapplicantGstrTrackAggregationMetrics;
 
 export interface GstrTrackReturnPeriodRow {
   returnPeriod: string;
@@ -181,21 +185,32 @@ export function computePrimaryGstrTrackAggregationMetricsForPans(
 }
 
 /**
- * Loan-level CONSIDERED_* return metrics:
- * SUM(per Considered Entity PAN counts) for the associated_loan_id.
+ * Loan-level COAPPLICANT_* return metrics:
+ * SUM(per coapplicant-entity PAN counts) for the associated_loan_id.
  */
+export function computeCoapplicantGstrTrackAggregationMetricsForPans(
+  pans: string[],
+  allTrackRecords: Array<Record<string, any>>,
+): CoapplicantGstrTrackAggregationMetrics {
+  const counts = sumPanLevelGstrTrackCounts(pans, allTrackRecords);
+  return {
+    COAPPLICANT_TOTAL_RETURN_PERIODS: counts.totalReturnPeriods,
+    COAPPLICANT_FILED_RETURN_COUNT: counts.filedReturnCount,
+    COAPPLICANT_NON_FILED_RETURN_COUNT: counts.nonFiledReturnCount,
+    COAPPLICANT_DELAYED_RETURN_COUNT: counts.delayedReturnCount,
+    COAPPLICANT_ONTIME_RETURN_COUNT: counts.ontimeReturnCount,
+  };
+}
+
+/** @deprecated Prefer computeCoapplicantGstrTrackAggregationMetricsForPans */
 export function computeConsideredGstrTrackAggregationMetricsForPans(
   pans: string[],
   allTrackRecords: Array<Record<string, any>>,
-): ConsideredGstrTrackAggregationMetrics {
-  const counts = sumPanLevelGstrTrackCounts(pans, allTrackRecords);
-  return {
-    CONSIDERED_TOTAL_RETURN_PERIODS: counts.totalReturnPeriods,
-    CONSIDERED_FILED_RETURN_COUNT: counts.filedReturnCount,
-    CONSIDERED_NON_FILED_RETURN_COUNT: counts.nonFiledReturnCount,
-    CONSIDERED_DELAYED_RETURN_COUNT: counts.delayedReturnCount,
-    CONSIDERED_ONTIME_RETURN_COUNT: counts.ontimeReturnCount,
-  };
+): CoapplicantGstrTrackAggregationMetrics {
+  return computeCoapplicantGstrTrackAggregationMetricsForPans(
+    pans,
+    allTrackRecords,
+  );
 }
 
 export function extractGstrTrackReturnPeriodRows(

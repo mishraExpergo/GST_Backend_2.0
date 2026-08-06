@@ -15,7 +15,7 @@ export class SchemaBootstrapService implements OnModuleInit {
     try {
       await this.ensureCoreTables();
       this.logger.log(
-        'Postgres core schema verified (jobs, aggregation, api_request_logs, gst_uploaded_file_data).',
+        'Postgres core schema verified (jobs, aggregation, api_request_logs, gst_uploaded_file_data, db_query_logs).',
       );
     } catch (err) {
       this.logger.error(
@@ -127,6 +127,45 @@ export class SchemaBootstrapService implements OnModuleInit {
         status text NULL,
         last_data_pull_date timestamptz NULL
       )
+    `);
+
+    await this.dataSource.query(`
+      CREATE TABLE IF NOT EXISTS db_query_logs (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        db_engine character varying(16) NOT NULL,
+        operation character varying(64) NULL,
+        statement text NOT NULL,
+        collection_or_table character varying(256) NULL,
+        duration_ms int NULL,
+        success boolean NOT NULL DEFAULT true,
+        error_message text NULL,
+        request_id character varying(64) NULL,
+        job_id character varying(64) NULL,
+        trace_id character varying(64) NULL,
+        source character varying(32) NULL,
+        user_id text NULL,
+        customer_id text NULL,
+        loan_id text NULL,
+        gstin text NULL,
+        parameters jsonb NULL,
+        created_at timestamptz NOT NULL DEFAULT now()
+      )
+    `);
+    await this.dataSource.query(`
+      CREATE INDEX IF NOT EXISTS idx_db_query_logs_created_at
+        ON db_query_logs (created_at)
+    `);
+    await this.dataSource.query(`
+      CREATE INDEX IF NOT EXISTS idx_db_query_logs_request_id
+        ON db_query_logs (request_id)
+    `);
+    await this.dataSource.query(`
+      CREATE INDEX IF NOT EXISTS idx_db_query_logs_job_id
+        ON db_query_logs (job_id)
+    `);
+    await this.dataSource.query(`
+      CREATE INDEX IF NOT EXISTS idx_db_query_logs_gstin
+        ON db_query_logs (gstin)
     `);
   }
 }

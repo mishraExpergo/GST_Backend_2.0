@@ -6,6 +6,7 @@ import { NestFactory } from '@nestjs/core';
 import { Transport } from '@nestjs/microservices';
 import { networkInterfaces } from 'os';
 import { AppModule } from './app.module';
+import { dbQueryLogMiddleware } from './database/db-query-log/db-query-log.middleware';
 // import { HttpLoggingInterceptor } from './common/interceptors/http-logging.interceptor';
 
 // On some Windows/VPN setups Node's DNS resolver (c-ares) fails SRV lookups
@@ -69,6 +70,7 @@ async function bootstrap() {
 
   const app = await NestFactory.create(AppModule);
   app.enableCors({ origin: true });
+  app.use(dbQueryLogMiddleware);
   // app.useGlobalInterceptors(new HttpLoggingInterceptor());
 
   if (enableRabbitMQ) {

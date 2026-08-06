@@ -4,7 +4,7 @@ import { HydratedDocument } from 'mongoose';
 export type GstPanSearchDocument = HydratedDocument<GstPanSearchRecord>;
 
 /**
- * Loan/customer snapshot: primary PAN GSTs + considered-entity PAN GSTs,
+ * Loan/customer snapshot: primary PAN GSTs + coapplicant-entity PAN GSTs,
  * each split into listed / unlisted vs gst_uploaded_file_data.
  */
 @Schema({ collection: 'gst_pan_search_data', timestamps: true })
@@ -27,7 +27,7 @@ export class GstPanSearchRecord {
   primary: Record<string, any> | null;
 
   @Prop({ type: [Object], default: [] })
-  consideredEntities: Record<string, any>[];
+  coapplicantEntities: Record<string, any>[];
 
   /** Full minimal payload for audit / re-read. */
   @Prop({ type: Object })

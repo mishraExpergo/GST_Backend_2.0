@@ -1,4 +1,5 @@
 import { Gstr3bComplianceRecord } from '../schemas/gst-gstr3b-compliance.schema';
+import { isCoapplicantEntityType } from './gst-terminology.util';
 
 export interface PrimaryGstr3bAggregationMetrics {
   PRIMARY_TOTAL_TAXABLE_TURNOVER: number;
@@ -24,28 +25,28 @@ export interface PrimaryGstr3bAggregationMetrics {
   PRIMARY_TOTAL_CASH_IGST_PAID: number;
 }
 
-export interface SecondaryGstr3bAggregationMetrics {
-  CONSIDERED_TOTAL_TAXABLE_TURNOVER: number;
-  CONSIDERED_TOTAL_EXEMPT_TURNOVER: number;
-  CONSIDERED_TOTAL_REVERSE_CHARGE_SALES: number;
-  CONSIDERED_TOTAL_PURCHASE_VALUE: number;
-  CONSIDERED_TOTAL_INTERSTATE_PURCHASES: number;
-  CONSIDERED_TOTAL_INTRASTATE_PURCHASES: number;
-  CONSIDERED_TOTAL_NON_GST_PURCHASES: number;
-  CONSIDERED_TOTAL_ITC_AVAILABLE: number;
-  CONSIDERED_TOTAL_CGST_ITC: number;
-  CONSIDERED_TOTAL_SGST_ITC: number;
-  CONSIDERED_TOTAL_IGST_ITC: number;
-  CONSIDERED_TOTAL_ITC_REVERSED: number;
-  CONSIDERED_TOTAL_INELIGIBLE_ITC: number;
-  CONSIDERED_TOTAL_ITC_UTILISED: number;
-  CONSIDERED_TOTAL_CGST_ITC_UTILISED: number;
-  CONSIDERED_TOTAL_SGST_ITC_UTILISED: number;
-  CONSIDERED_TOTAL_IGST_ITC_UTILISED: number;
-  CONSIDERED_TOTAL_CASH_TAX_PAID: number;
-  CONSIDERED_TOTAL_CASH_CGST_PAID: number;
-  CONSIDERED_TOTAL_CASH_SGST_PAID: number;
-  CONSIDERED_TOTAL_CASH_IGST_PAID: number;
+export interface CoapplicantGstr3bAggregationMetrics {
+  COAPPLICANT_TOTAL_TAXABLE_TURNOVER: number;
+  COAPPLICANT_TOTAL_EXEMPT_TURNOVER: number;
+  COAPPLICANT_TOTAL_REVERSE_CHARGE_SALES: number;
+  COAPPLICANT_TOTAL_PURCHASE_VALUE: number;
+  COAPPLICANT_TOTAL_INTERSTATE_PURCHASES: number;
+  COAPPLICANT_TOTAL_INTRASTATE_PURCHASES: number;
+  COAPPLICANT_TOTAL_NON_GST_PURCHASES: number;
+  COAPPLICANT_TOTAL_ITC_AVAILABLE: number;
+  COAPPLICANT_TOTAL_CGST_ITC: number;
+  COAPPLICANT_TOTAL_SGST_ITC: number;
+  COAPPLICANT_TOTAL_IGST_ITC: number;
+  COAPPLICANT_TOTAL_ITC_REVERSED: number;
+  COAPPLICANT_TOTAL_INELIGIBLE_ITC: number;
+  COAPPLICANT_TOTAL_ITC_UTILISED: number;
+  COAPPLICANT_TOTAL_CGST_ITC_UTILISED: number;
+  COAPPLICANT_TOTAL_SGST_ITC_UTILISED: number;
+  COAPPLICANT_TOTAL_IGST_ITC_UTILISED: number;
+  COAPPLICANT_TOTAL_CASH_TAX_PAID: number;
+  COAPPLICANT_TOTAL_CASH_CGST_PAID: number;
+  COAPPLICANT_TOTAL_CASH_SGST_PAID: number;
+  COAPPLICANT_TOTAL_CASH_IGST_PAID: number;
 }
 
 export function normalizePan(pan: string | null | undefined): string | null {
@@ -102,74 +103,74 @@ export function computePrimaryGstr3bAggregationMetrics(
   };
 }
 
-export function computeSecondaryGstr3bAggregationMetrics(
+export function computeCoapplicantGstr3bAggregationMetrics(
   records: Array<Gstr3bComplianceRecord | Record<string, any>>,
-): SecondaryGstr3bAggregationMetrics {
+): CoapplicantGstr3bAggregationMetrics {
   const summary = computeSummary(records);
   return {
-    CONSIDERED_TOTAL_TAXABLE_TURNOVER: summary.totalTaxableTurnover,
-    CONSIDERED_TOTAL_EXEMPT_TURNOVER: summary.totalExemptTurnover,
-    CONSIDERED_TOTAL_REVERSE_CHARGE_SALES: summary.totalReverseChargeSales,
-    CONSIDERED_TOTAL_PURCHASE_VALUE: summary.totalPurchaseValue,
-    CONSIDERED_TOTAL_INTERSTATE_PURCHASES: summary.totalInterstatePurchases,
-    CONSIDERED_TOTAL_INTRASTATE_PURCHASES: summary.totalIntrastatePurchases,
-    CONSIDERED_TOTAL_NON_GST_PURCHASES: summary.totalNonGstPurchases,
-    CONSIDERED_TOTAL_ITC_AVAILABLE: summary.totalItcAvailable,
-    CONSIDERED_TOTAL_CGST_ITC: summary.totalCgstItc,
-    CONSIDERED_TOTAL_SGST_ITC: summary.totalSgstItc,
-    CONSIDERED_TOTAL_IGST_ITC: summary.totalIgstItc,
-    CONSIDERED_TOTAL_ITC_REVERSED: summary.totalItcReversed,
-    CONSIDERED_TOTAL_INELIGIBLE_ITC: summary.totalIneligibleItc,
-    CONSIDERED_TOTAL_ITC_UTILISED: summary.totalItcUtilised,
-    CONSIDERED_TOTAL_CGST_ITC_UTILISED: summary.totalCgstItcUtilised,
-    CONSIDERED_TOTAL_SGST_ITC_UTILISED: summary.totalSgstItcUtilised,
-    CONSIDERED_TOTAL_IGST_ITC_UTILISED: summary.totalIgstItcUtilised,
-    CONSIDERED_TOTAL_CASH_TAX_PAID: summary.totalCashTaxPaid,
-    CONSIDERED_TOTAL_CASH_CGST_PAID: summary.totalCashCgstPaid,
-    CONSIDERED_TOTAL_CASH_SGST_PAID: summary.totalCashSgstPaid,
-    CONSIDERED_TOTAL_CASH_IGST_PAID: summary.totalCashIgstPaid,
+    COAPPLICANT_TOTAL_TAXABLE_TURNOVER: summary.totalTaxableTurnover,
+    COAPPLICANT_TOTAL_EXEMPT_TURNOVER: summary.totalExemptTurnover,
+    COAPPLICANT_TOTAL_REVERSE_CHARGE_SALES: summary.totalReverseChargeSales,
+    COAPPLICANT_TOTAL_PURCHASE_VALUE: summary.totalPurchaseValue,
+    COAPPLICANT_TOTAL_INTERSTATE_PURCHASES: summary.totalInterstatePurchases,
+    COAPPLICANT_TOTAL_INTRASTATE_PURCHASES: summary.totalIntrastatePurchases,
+    COAPPLICANT_TOTAL_NON_GST_PURCHASES: summary.totalNonGstPurchases,
+    COAPPLICANT_TOTAL_ITC_AVAILABLE: summary.totalItcAvailable,
+    COAPPLICANT_TOTAL_CGST_ITC: summary.totalCgstItc,
+    COAPPLICANT_TOTAL_SGST_ITC: summary.totalSgstItc,
+    COAPPLICANT_TOTAL_IGST_ITC: summary.totalIgstItc,
+    COAPPLICANT_TOTAL_ITC_REVERSED: summary.totalItcReversed,
+    COAPPLICANT_TOTAL_INELIGIBLE_ITC: summary.totalIneligibleItc,
+    COAPPLICANT_TOTAL_ITC_UTILISED: summary.totalItcUtilised,
+    COAPPLICANT_TOTAL_CGST_ITC_UTILISED: summary.totalCgstItcUtilised,
+    COAPPLICANT_TOTAL_SGST_ITC_UTILISED: summary.totalSgstItcUtilised,
+    COAPPLICANT_TOTAL_IGST_ITC_UTILISED: summary.totalIgstItcUtilised,
+    COAPPLICANT_TOTAL_CASH_TAX_PAID: summary.totalCashTaxPaid,
+    COAPPLICANT_TOTAL_CASH_CGST_PAID: summary.totalCashCgstPaid,
+    COAPPLICANT_TOTAL_CASH_SGST_PAID: summary.totalCashSgstPaid,
+    COAPPLICANT_TOTAL_CASH_IGST_PAID: summary.totalCashIgstPaid,
   };
 }
 
 /**
- * Loan-level CONSIDERED_* GSTR-3B metrics (Considered_GST_Metrics_Logic.xlsx):
+ * Loan-level COAPPLICANT_* GSTR-3B metrics (COAPPLICANT_GST_Metrics_Logic.xlsx):
  *
  * 1. For each Considered Entity PAN (non-empty), compute entity-level metrics
  *    from that PAN's GSTR-3B records on the loan.
  * 2. SUM those entity-level values across all Considered Entity PANs for the
  *    same associated_loan_id.
  */
-export function computeLoanLevelConsideredGstr3bMetrics(
-  consideredEntityPans: string[],
+export function computeLoanLevelCoapplicantGstr3bMetrics(
+  coapplicantEntityPans: string[],
   loanGstr3bRecords: Array<Gstr3bComplianceRecord | Record<string, any>>,
-): SecondaryGstr3bAggregationMetrics {
-  const empty: SecondaryGstr3bAggregationMetrics = {
-    CONSIDERED_TOTAL_TAXABLE_TURNOVER: 0,
-    CONSIDERED_TOTAL_EXEMPT_TURNOVER: 0,
-    CONSIDERED_TOTAL_REVERSE_CHARGE_SALES: 0,
-    CONSIDERED_TOTAL_PURCHASE_VALUE: 0,
-    CONSIDERED_TOTAL_INTERSTATE_PURCHASES: 0,
-    CONSIDERED_TOTAL_INTRASTATE_PURCHASES: 0,
-    CONSIDERED_TOTAL_NON_GST_PURCHASES: 0,
-    CONSIDERED_TOTAL_ITC_AVAILABLE: 0,
-    CONSIDERED_TOTAL_CGST_ITC: 0,
-    CONSIDERED_TOTAL_SGST_ITC: 0,
-    CONSIDERED_TOTAL_IGST_ITC: 0,
-    CONSIDERED_TOTAL_ITC_REVERSED: 0,
-    CONSIDERED_TOTAL_INELIGIBLE_ITC: 0,
-    CONSIDERED_TOTAL_ITC_UTILISED: 0,
-    CONSIDERED_TOTAL_CGST_ITC_UTILISED: 0,
-    CONSIDERED_TOTAL_SGST_ITC_UTILISED: 0,
-    CONSIDERED_TOTAL_IGST_ITC_UTILISED: 0,
-    CONSIDERED_TOTAL_CASH_TAX_PAID: 0,
-    CONSIDERED_TOTAL_CASH_CGST_PAID: 0,
-    CONSIDERED_TOTAL_CASH_SGST_PAID: 0,
-    CONSIDERED_TOTAL_CASH_IGST_PAID: 0,
+): CoapplicantGstr3bAggregationMetrics {
+  const empty: CoapplicantGstr3bAggregationMetrics = {
+    COAPPLICANT_TOTAL_TAXABLE_TURNOVER: 0,
+    COAPPLICANT_TOTAL_EXEMPT_TURNOVER: 0,
+    COAPPLICANT_TOTAL_REVERSE_CHARGE_SALES: 0,
+    COAPPLICANT_TOTAL_PURCHASE_VALUE: 0,
+    COAPPLICANT_TOTAL_INTERSTATE_PURCHASES: 0,
+    COAPPLICANT_TOTAL_INTRASTATE_PURCHASES: 0,
+    COAPPLICANT_TOTAL_NON_GST_PURCHASES: 0,
+    COAPPLICANT_TOTAL_ITC_AVAILABLE: 0,
+    COAPPLICANT_TOTAL_CGST_ITC: 0,
+    COAPPLICANT_TOTAL_SGST_ITC: 0,
+    COAPPLICANT_TOTAL_IGST_ITC: 0,
+    COAPPLICANT_TOTAL_ITC_REVERSED: 0,
+    COAPPLICANT_TOTAL_INELIGIBLE_ITC: 0,
+    COAPPLICANT_TOTAL_ITC_UTILISED: 0,
+    COAPPLICANT_TOTAL_CGST_ITC_UTILISED: 0,
+    COAPPLICANT_TOTAL_SGST_ITC_UTILISED: 0,
+    COAPPLICANT_TOTAL_IGST_ITC_UTILISED: 0,
+    COAPPLICANT_TOTAL_CASH_TAX_PAID: 0,
+    COAPPLICANT_TOTAL_CASH_CGST_PAID: 0,
+    COAPPLICANT_TOTAL_CASH_SGST_PAID: 0,
+    COAPPLICANT_TOTAL_CASH_IGST_PAID: 0,
   };
 
   const pans = Array.from(
     new Set(
-      consideredEntityPans
+      coapplicantEntityPans
         .map((pan) => normalizePan(pan))
         .filter((pan): pan is string => Boolean(pan)),
     ),
@@ -179,62 +180,73 @@ export function computeLoanLevelConsideredGstr3bMetrics(
     return empty;
   }
 
-  // Prefer CONSIDERED_ENTITY docs when entityType is present.
-  const consideredScopedRecords = loanGstr3bRecords.filter((record) => {
+  // Prefer COAPPLICANT_ENTITY docs when entityType is present.
+  const coapplicantScopedRecords = loanGstr3bRecords.filter((record) => {
     const entityType = String(record.entityType ?? '')
       .trim()
       .toUpperCase();
-    return !entityType || entityType === 'CONSIDERED_ENTITY';
+    return !entityType || isCoapplicantEntityType(entityType);
   });
 
   const totals = { ...empty };
 
   for (const pan of pans) {
-    const panRecords = getGstr3bRecordsForPan(consideredScopedRecords, pan);
-    const entityMetrics = computeSecondaryGstr3bAggregationMetrics(panRecords);
+    const panRecords = getGstr3bRecordsForPan(coapplicantScopedRecords, pan);
+    const entityMetrics = computeCoapplicantGstr3bAggregationMetrics(panRecords);
 
-    totals.CONSIDERED_TOTAL_TAXABLE_TURNOVER +=
-      entityMetrics.CONSIDERED_TOTAL_TAXABLE_TURNOVER;
-    totals.CONSIDERED_TOTAL_EXEMPT_TURNOVER +=
-      entityMetrics.CONSIDERED_TOTAL_EXEMPT_TURNOVER;
-    totals.CONSIDERED_TOTAL_REVERSE_CHARGE_SALES +=
-      entityMetrics.CONSIDERED_TOTAL_REVERSE_CHARGE_SALES;
-    totals.CONSIDERED_TOTAL_PURCHASE_VALUE +=
-      entityMetrics.CONSIDERED_TOTAL_PURCHASE_VALUE;
-    totals.CONSIDERED_TOTAL_INTERSTATE_PURCHASES +=
-      entityMetrics.CONSIDERED_TOTAL_INTERSTATE_PURCHASES;
-    totals.CONSIDERED_TOTAL_INTRASTATE_PURCHASES +=
-      entityMetrics.CONSIDERED_TOTAL_INTRASTATE_PURCHASES;
-    totals.CONSIDERED_TOTAL_NON_GST_PURCHASES +=
-      entityMetrics.CONSIDERED_TOTAL_NON_GST_PURCHASES;
-    totals.CONSIDERED_TOTAL_ITC_AVAILABLE +=
-      entityMetrics.CONSIDERED_TOTAL_ITC_AVAILABLE;
-    totals.CONSIDERED_TOTAL_CGST_ITC += entityMetrics.CONSIDERED_TOTAL_CGST_ITC;
-    totals.CONSIDERED_TOTAL_SGST_ITC += entityMetrics.CONSIDERED_TOTAL_SGST_ITC;
-    totals.CONSIDERED_TOTAL_IGST_ITC += entityMetrics.CONSIDERED_TOTAL_IGST_ITC;
-    totals.CONSIDERED_TOTAL_ITC_REVERSED +=
-      entityMetrics.CONSIDERED_TOTAL_ITC_REVERSED;
-    totals.CONSIDERED_TOTAL_INELIGIBLE_ITC +=
-      entityMetrics.CONSIDERED_TOTAL_INELIGIBLE_ITC;
-    totals.CONSIDERED_TOTAL_ITC_UTILISED +=
-      entityMetrics.CONSIDERED_TOTAL_ITC_UTILISED;
-    totals.CONSIDERED_TOTAL_CGST_ITC_UTILISED +=
-      entityMetrics.CONSIDERED_TOTAL_CGST_ITC_UTILISED;
-    totals.CONSIDERED_TOTAL_SGST_ITC_UTILISED +=
-      entityMetrics.CONSIDERED_TOTAL_SGST_ITC_UTILISED;
-    totals.CONSIDERED_TOTAL_IGST_ITC_UTILISED +=
-      entityMetrics.CONSIDERED_TOTAL_IGST_ITC_UTILISED;
-    totals.CONSIDERED_TOTAL_CASH_TAX_PAID +=
-      entityMetrics.CONSIDERED_TOTAL_CASH_TAX_PAID;
-    totals.CONSIDERED_TOTAL_CASH_CGST_PAID +=
-      entityMetrics.CONSIDERED_TOTAL_CASH_CGST_PAID;
-    totals.CONSIDERED_TOTAL_CASH_SGST_PAID +=
-      entityMetrics.CONSIDERED_TOTAL_CASH_SGST_PAID;
-    totals.CONSIDERED_TOTAL_CASH_IGST_PAID +=
-      entityMetrics.CONSIDERED_TOTAL_CASH_IGST_PAID;
+    totals.COAPPLICANT_TOTAL_TAXABLE_TURNOVER +=
+      entityMetrics.COAPPLICANT_TOTAL_TAXABLE_TURNOVER;
+    totals.COAPPLICANT_TOTAL_EXEMPT_TURNOVER +=
+      entityMetrics.COAPPLICANT_TOTAL_EXEMPT_TURNOVER;
+    totals.COAPPLICANT_TOTAL_REVERSE_CHARGE_SALES +=
+      entityMetrics.COAPPLICANT_TOTAL_REVERSE_CHARGE_SALES;
+    totals.COAPPLICANT_TOTAL_PURCHASE_VALUE +=
+      entityMetrics.COAPPLICANT_TOTAL_PURCHASE_VALUE;
+    totals.COAPPLICANT_TOTAL_INTERSTATE_PURCHASES +=
+      entityMetrics.COAPPLICANT_TOTAL_INTERSTATE_PURCHASES;
+    totals.COAPPLICANT_TOTAL_INTRASTATE_PURCHASES +=
+      entityMetrics.COAPPLICANT_TOTAL_INTRASTATE_PURCHASES;
+    totals.COAPPLICANT_TOTAL_NON_GST_PURCHASES +=
+      entityMetrics.COAPPLICANT_TOTAL_NON_GST_PURCHASES;
+    totals.COAPPLICANT_TOTAL_ITC_AVAILABLE +=
+      entityMetrics.COAPPLICANT_TOTAL_ITC_AVAILABLE;
+    totals.COAPPLICANT_TOTAL_CGST_ITC += entityMetrics.COAPPLICANT_TOTAL_CGST_ITC;
+    totals.COAPPLICANT_TOTAL_SGST_ITC += entityMetrics.COAPPLICANT_TOTAL_SGST_ITC;
+    totals.COAPPLICANT_TOTAL_IGST_ITC += entityMetrics.COAPPLICANT_TOTAL_IGST_ITC;
+    totals.COAPPLICANT_TOTAL_ITC_REVERSED +=
+      entityMetrics.COAPPLICANT_TOTAL_ITC_REVERSED;
+    totals.COAPPLICANT_TOTAL_INELIGIBLE_ITC +=
+      entityMetrics.COAPPLICANT_TOTAL_INELIGIBLE_ITC;
+    totals.COAPPLICANT_TOTAL_ITC_UTILISED +=
+      entityMetrics.COAPPLICANT_TOTAL_ITC_UTILISED;
+    totals.COAPPLICANT_TOTAL_CGST_ITC_UTILISED +=
+      entityMetrics.COAPPLICANT_TOTAL_CGST_ITC_UTILISED;
+    totals.COAPPLICANT_TOTAL_SGST_ITC_UTILISED +=
+      entityMetrics.COAPPLICANT_TOTAL_SGST_ITC_UTILISED;
+    totals.COAPPLICANT_TOTAL_IGST_ITC_UTILISED +=
+      entityMetrics.COAPPLICANT_TOTAL_IGST_ITC_UTILISED;
+    totals.COAPPLICANT_TOTAL_CASH_TAX_PAID +=
+      entityMetrics.COAPPLICANT_TOTAL_CASH_TAX_PAID;
+    totals.COAPPLICANT_TOTAL_CASH_CGST_PAID +=
+      entityMetrics.COAPPLICANT_TOTAL_CASH_CGST_PAID;
+    totals.COAPPLICANT_TOTAL_CASH_SGST_PAID +=
+      entityMetrics.COAPPLICANT_TOTAL_CASH_SGST_PAID;
+    totals.COAPPLICANT_TOTAL_CASH_IGST_PAID +=
+      entityMetrics.COAPPLICANT_TOTAL_CASH_IGST_PAID;
   }
 
   return totals;
+}
+
+/** @deprecated Prefer computeLoanLevelCoapplicantGstr3bMetrics */
+export function computeLoanLevelConsideredGstr3bMetrics(
+  coapplicantEntityPans: string[],
+  loanGstr3bRecords: Array<Gstr3bComplianceRecord | Record<string, any>>,
+): CoapplicantGstr3bAggregationMetrics {
+  return computeLoanLevelCoapplicantGstr3bMetrics(
+    coapplicantEntityPans,
+    loanGstr3bRecords,
+  );
 }
 
 function computeSummary(

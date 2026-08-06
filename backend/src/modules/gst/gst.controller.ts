@@ -24,6 +24,9 @@ import { GstApiService } from './services/gst-api.service';
 import { GstTaxpayerAuthService } from './services/gst-taxpayer-auth.service';
 import { GstTaxpayerReturnsService } from './services/gst-taxpayer-returns.service';
 import { ApiRequestLogService } from './services/api-request-log.service';
+import { DbQueryLogService } from '../../database/db-query-log/db-query-log.service';
+import { isDbQueryLoggingEnabled } from '../../database/db-query-log/db-query-log.context';
+import type { DbQueryEngine } from '../../entities/db-query-log.entity';
 import {
   GstReturnAggregationSchedulerService,
   type SchedulerReturnType,
@@ -42,6 +45,7 @@ export class GstController {
     private readonly gstTaxpayerAuthService: GstTaxpayerAuthService,
     private readonly gstTaxpayerReturnsService: GstTaxpayerReturnsService,
     private readonly apiRequestLogService: ApiRequestLogService,
+    private readonly dbQueryLogService: DbQueryLogService,
     private readonly returnAggregationScheduler: GstReturnAggregationSchedulerService,
     @Optional() @Inject('EXCEL_SERVICE') private readonly excelClient?: ClientProxy,
   ) {}
@@ -104,7 +108,7 @@ export class GstController {
    * POST /gst/compliance/public/pan/search?state_code=37
    * Body: { "pan": "AAACN0255D" }
    * Resolves loanId + customerId from gst_uploaded_file_data (primary_pan),
-   * then Sandbox-searches primary + considered-entity PANs and returns
+   * then Sandbox-searches primary + coapplicant-entity PANs and returns
    * listed/unlisted GSTINs per loan/customer.
    */
   @Post('compliance/public/pan/search')
@@ -222,6 +226,63 @@ export class GstController {
   }
 
   /**
+   * GET /gst/db-query-logs
+   * Returns rows from db_query_logs (Postgres + Mongo statements captured by the app).
+   * Requires ENABLE_DB_QUERY_LOGS=true for new rows to be written.
+   */
+  @Get('db-query-logs')
+  async getDbQueryLogs(
+    @Query('requestId') requestId?: string,
+    @Query('jobId') jobId?: string,
+    @Query('gstin') gstin?: string,
+    @Query('dbEngine') dbEngine?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('limit') limit = '50',
+    @Query('offset') offset = '0',
+  ) {
+    const normalizedEngine = dbEngine?.trim().toLowerCase();
+    if (
+      normalizedEngine &&
+      normalizedEngine !== 'postgres' &&
+      normalizedEngine !== 'mongo'
+    ) {
+      throw new BadRequestException(
+        'Query parameter "dbEngine" must be "postgres" or "mongo".',
+      );
+    }
+
+    const parseDate = (value: string | undefined, label: string): Date | undefined => {
+      if (!value?.trim()) {
+        return undefined;
+      }
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) {
+        throw new BadRequestException(
+          `Query parameter "${label}" must be a valid ISO date.`,
+        );
+      }
+      return date;
+    };
+
+    const result = await this.dbQueryLogService.findLogs({
+      requestId: requestId?.trim() || undefined,
+      jobId: jobId?.trim() || undefined,
+      gstin: gstin?.trim() || undefined,
+      dbEngine: normalizedEngine as DbQueryEngine | undefined,
+      from: parseDate(from, 'from'),
+      to: parseDate(to, 'to'),
+      limit: Number.parseInt(limit, 10) || 50,
+      offset: Number.parseInt(offset, 10) || 0,
+    });
+
+    return {
+      enabled: isDbQueryLoggingEnabled(),
+      ...result,
+    };
+  }
+
+  /**
    * POST /gst/api-request-logs/batch
    * Batch equivalent of GET /gst/api-request-logs used by the dashboard.
    */
@@ -238,10 +299,11 @@ export class GstController {
   }
 
   /**
-   * GET /gst/aggregation?loanId=...
-   * Returns the flattened { outputField, output } rows for the Aggregation
-   * Table modal (primary company + every considered/secondary entity for
-   * that loan), read from primary_gst_aggregation / secondary_gst_aggregation.
+   * GET /gst/aggregation?loanId=...&type=primary|coapplicant
+   * Returns flattened { outputField, output } rows for the Aggregation Table
+   * modal. Coapplicant metrics are still stored in secondary_gst_aggregation
+   * for now; API uses coapplicant / COAPPLICANT_* naming.
+   * (type=secondary is still accepted as a legacy alias for coapplicant.)
    */
   @Get('aggregation')
   async getAggregationData(
@@ -252,18 +314,19 @@ export class GstController {
       throw new BadRequestException('loanId is required');
     }
 
-    // Default to primary if not provided, for backwards compatibility
-    const requestedType = type === 'secondary' ? 'secondary' : 'primary';
+    const result = await this.gstService.getAggregationTable(loanId, type as any);
 
-    // Call the updated service method
-    const result = await this.gstService.getAggregationTable(loanId, requestedType);
-
-    // Format the response to match the AggregationApiResponse interface your frontend expects
     return {
       loanId: loanId,
+      type:
+        String(type ?? 'primary').toLowerCase() === 'secondary' ||
+        String(type ?? '').toLowerCase() === 'coapplicant' ||
+        String(type ?? '').toLowerCase() === 'considered'
+          ? 'coapplicant'
+          : 'primary',
       count: result.rows.length,
       data: result.rows,
-      debug: result.debug // Optional: keep for debugging purposes
+      debug: result.debug,
     };
   }
 
@@ -458,6 +521,49 @@ export class GstController {
       financialYear: job.metadata?.financialYear ?? financialYear,
       checkStatusUrl: `/gst/status/${job.id}`,
     };
+  }
+
+  /**
+   * POST /gst/verify-and-fetch/gstr-track/single
+   * Same as gstr-track, but for one GSTIN (sync, useful for testing).
+   * Calls public Sandbox track, upserts gst_gstR1_returns_compliance_data,
+   * then runs track aggregation for that customer.
+   * No OTP required.
+   *
+   * body:
+   *   - gstin (required)
+   *   - financialYear (required): e.g. "FY 2021-22"
+   *   - customerId (required)
+   *   - associatedLoanId (required)
+   *   - tableName (optional)
+   *   - forceRefresh (optional, default true): if false and Mongo already
+   *     has FETCHED/NO_RECORD/INVALID_FY for this GSTIN+FY, skip Sandbox
+   */
+  @Post('verify-and-fetch/gstr-track/single')
+  @HttpCode(HttpStatus.OK)
+  async verifyAndFetchGstrTrackSingle(
+    @Body('gstin') gstin: string,
+    @Body('financialYear') financialYear: string,
+    @Body('customerId') customerId: string,
+    @Body('associatedLoanId') associatedLoanId: string,
+    @Body('tableName') tableName?: string,
+    @Body('forceRefresh') forceRefresh?: boolean,
+  ) {
+    if (!String(financialYear ?? '').trim()) {
+      throw new BadRequestException(
+        '"financialYear" is required (Sandbox format e.g. "FY 2021-22").',
+      );
+    }
+
+    const data = await this.gstComplianceService.fetchGstrTrackForSingleGstin({
+      gstin,
+      financialYear,
+      customerId,
+      associatedLoanId,
+      tableName,
+      forceRefresh,
+    });
+    return this.successResponse('verify-and-fetch.gstr-track-single', data);
   }
 
   /**

@@ -23,30 +23,31 @@ import {
   mergeAggregationVariable,
   preserveMetricKeys,
   PRIMARY_GST_COMPLIANCE_METRIC_KEYS,
-  CONSIDERED_GST_COMPLIANCE_METRIC_KEYS,
+  COAPPLICANT_GST_COMPLIANCE_METRIC_KEYS,
   PRIMARY_GSTR_TRACK_METRIC_KEYS,
-  CONSIDERED_GSTR_TRACK_METRIC_KEYS,
-  CONSIDERED_GSTR2B_SUPPLIER_METRIC_KEYS,
-  CONSIDERED_GSTR3B_METRIC_KEYS,
+  COAPPLICANT_GSTR_TRACK_METRIC_KEYS,
+  COAPPLICANT_GSTR2B_SUPPLIER_METRIC_KEYS,
+  COAPPLICANT_GSTR3B_METRIC_KEYS,
 } from './gst-aggregation-variable.util';
 import {
   computePrimaryGstr2bAggregationMetrics,
-  computeLoanLevelConsideredSupplierMetrics,
+  computeLoanLevelCoapplicantSupplierMetrics,
   getGstr2bRecordsForPan,
   normalizePan as normalizePanFrom2bUtil,
 } from './gst-gstr2b-aggregation.util';
 import {
   computePrimaryGstr3bAggregationMetrics,
-  computeLoanLevelConsideredGstr3bMetrics,
+  computeLoanLevelCoapplicantGstr3bMetrics,
   getGstr3bRecordsForPan,
   normalizePan as normalizePanFrom3bUtil,
 } from './gst-gstr3b-aggregation.util';
 import {
   computePrimaryGstrTrackAggregationMetricsForPans,
-  computeConsideredGstrTrackAggregationMetricsForPans,
+  computeCoapplicantGstrTrackAggregationMetricsForPans,
 } from './gst-gstr-track-aggregation.util';
 import { GstAggregationHistoryService } from './gst-aggregation-history.service';
 import { Gstr1ReturnsComplianceRecord } from '../schemas/gst-gstr1-returns-compliance.schema';
+import { isCoapplicantEntityType } from './gst-terminology.util';
 
 
 
@@ -56,7 +57,7 @@ const GSTIN_PATTERN =
 
 
 
-type GstEntityType = 'PRIMARY' | 'CONSIDERED_ENTITY';
+type GstEntityType = 'PRIMARY' | 'COAPPLICANT_ENTITY';
 
 
 
@@ -137,13 +138,13 @@ export interface PrimaryAggregationMetrics {
  * Written by verify-and-fetch.
  */
 export interface ConsideredComplianceAggregationMetrics {
-  CONSIDERED_TOTAL_GST_COUNT: number;
-  CONSIDERED_ACTIVE_GST_COUNT: number;
-  CONSIDERED_CANCELLED_GST_COUNT: number;
-  CONSIDERED_SUSPENDED_GST_COUNT: number;
-  CONSIDERED_ADDRESS_CHANGE_COUNT: number;
-  CONSIDERED_TOTAL_EINVOICE_COUNT: number;
-  CONSIDERED_EINVOICE_ENABLED_COUNT: number;
+  COAPPLICANT_TOTAL_GST_COUNT: number;
+  COAPPLICANT_ACTIVE_GST_COUNT: number;
+  COAPPLICANT_CANCELLED_GST_COUNT: number;
+  COAPPLICANT_SUSPENDED_GST_COUNT: number;
+  COAPPLICANT_ADDRESS_CHANGE_COUNT: number;
+  COAPPLICANT_TOTAL_EINVOICE_COUNT: number;
+  COAPPLICANT_EINVOICE_ENABLED_COUNT: number;
 }
 
 /** @deprecated Use ConsideredComplianceAggregationMetrics */
@@ -172,7 +173,7 @@ export interface CustomerComplianceContext {
 
   primaryRecords: GstComplianceRecord[];
 
-  secondaryRecords: GstComplianceRecord[];
+  coapplicantRecords: GstComplianceRecord[];
 
 }
 
@@ -183,8 +184,8 @@ const VERIFY_FETCH_OPERATION = 'GSTIN_VERIFY_AND_FETCH';
 const VERIFY_2B_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_2B';
 const VERIFY_3B_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_3B';
 const VERIFY_TRACK_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_TRACK';
-const OBSOLETE_GSTR3B_KEYS = ['PRIMARY_TOTAL_TURNOVER', 'CONSIDERED_TOTAL_TURNOVER'] as const;
-const OBSOLETE_SECONDARY_COMPLIANCE_KEYS = [
+const OBSOLETE_GSTR3B_KEYS = ['PRIMARY_TOTAL_TURNOVER', 'COAPPLICANT_TOTAL_TURNOVER', 'CONSIDERED_TOTAL_TURNOVER'] as const;
+const OBSOLETE_LEGACY_COMPLIANCE_KEYS = [
   'SECONDARY_TOTAL_GST_COUNT',
   'SECONDARY_ACTIVE_GST_COUNT',
   'SECONDARY_CANCELLED_GST_COUNT',
@@ -192,6 +193,13 @@ const OBSOLETE_SECONDARY_COMPLIANCE_KEYS = [
   'SECONDARY_ADDRESS_CHANGE',
   'SECONDARY_TOTAL_EINVOICE_COUNT',
   'SECONDARY_EINVOICE_ENABLED_COUNT',
+  'CONSIDERED_TOTAL_GST_COUNT',
+  'CONSIDERED_ACTIVE_GST_COUNT',
+  'CONSIDERED_CANCELLED_GST_COUNT',
+  'CONSIDERED_SUSPENDED_GST_COUNT',
+  'CONSIDERED_ADDRESS_CHANGE_COUNT',
+  'CONSIDERED_TOTAL_EINVOICE_COUNT',
+  'CONSIDERED_EINVOICE_ENABLED_COUNT',
 ] as const;
 const HISTORY_SOURCE_VERIFY_FETCH = 'VERIFY_FETCH';
 const HISTORY_SOURCE_GSTR2B = 'GSTR-2B';
@@ -436,11 +444,11 @@ export class GstAggregationService {
       }
     }
 
-    const existingSecondaryRows = await this.secondaryAggRepo.find({
+    const existingCoapplicantRows = await this.secondaryAggRepo.find({
       where: { customerId },
     });
     const existingSecondaryByLoan = new Map<string, SecondaryGstAggregation>();
-    for (const row of existingSecondaryRows) {
+    for (const row of existingCoapplicantRows) {
       if (row.associatedLoanId) {
         existingSecondaryByLoan.set(row.associatedLoanId, row);
       }
@@ -452,7 +460,7 @@ export class GstAggregationService {
       .exec();
 
     const primaryRowsToSave: Partial<PrimaryGstAggregation>[] = [];
-    const secondaryRowsToSave: Partial<SecondaryGstAggregation>[] = [];
+    const coapplicantRowsToSave: Partial<SecondaryGstAggregation>[] = [];
 
     for (const [loanId, loanUploadRows] of this.groupUploadRowsByLoan(
       uploadRows,
@@ -499,18 +507,18 @@ export class GstAggregationService {
       // Secondary (Considered Supplier Metrics):
       // Filter considered_entity_pan IS NOT NULL / non-empty → per-PAN metrics →
       // SUM across distinct Considered Entity PANs for this associated_loan_id.
-      const consideredEntityPans =
+      const coapplicantEntityPans =
         this.collectDistinctConsideredPansForLoan(loanUploadRows);
-      if (consideredEntityPans.length === 0) {
+      if (coapplicantEntityPans.length === 0) {
         continue;
       }
 
       const loanGstr2bRecords = gstr2bRecords.filter(
         (record) => String(record.loanId ?? '').trim() === loanId,
       );
-      const consideredSupplierMetrics =
-        computeLoanLevelConsideredSupplierMetrics(
-          consideredEntityPans,
+      const coapplicantSupplierMetrics =
+        computeLoanLevelCoapplicantSupplierMetrics(
+          coapplicantEntityPans,
           loanGstr2bRecords,
         );
 
@@ -519,9 +527,9 @@ export class GstAggregationService {
         {
           ...preserveMetricKeys(
             existingSecondary?.aggregationVariable ?? null,
-            CONSIDERED_GSTR2B_SUPPLIER_METRIC_KEYS,
+            COAPPLICANT_GSTR2B_SUPPLIER_METRIC_KEYS,
           ),
-          ...(consideredSupplierMetrics as unknown as Record<string, unknown>),
+          ...(coapplicantSupplierMetrics as unknown as Record<string, unknown>),
         },
       );
       const cleanedSecondaryJson = this.removeAggregationKeys(
@@ -529,7 +537,7 @@ export class GstAggregationService {
         OBSOLETE_GSTR3B_KEYS,
       );
 
-      secondaryRowsToSave.push({
+      coapplicantRowsToSave.push({
         ...(existingSecondary?.id ? { id: existingSecondary.id } : {}),
         customerId,
         associatedLoanId: loanId,
@@ -538,8 +546,8 @@ export class GstAggregationService {
     }
 
     const dedupedPrimaryRows = this.dedupePrimaryRowsByLoanId(primaryRowsToSave);
-    const dedupedSecondaryRows = this.dedupeSecondaryRowsByLoanId(
-      secondaryRowsToSave,
+    const dedupedCoapplicantRows = this.dedupeSecondaryRowsByLoanId(
+      coapplicantRowsToSave,
     );
 
     if (dedupedPrimaryRows.length > 0) {
@@ -551,17 +559,17 @@ export class GstAggregationService {
       );
     }
 
-    if (dedupedSecondaryRows.length > 0) {
+    if (dedupedCoapplicantRows.length > 0) {
       await this.aggregationHistoryService.upsertSecondaryAggregation(
         this.secondaryAggRepo,
-        dedupedSecondaryRows,
+        dedupedCoapplicantRows,
         existingSecondaryByLoan,
         HISTORY_SOURCE_GSTR2B,
       );
     }
 
     this.logger.log(
-      `customerId=${customerId}: merged GSTR-2B metrics into ${dedupedPrimaryRows.length} primary and ${dedupedSecondaryRows.length} secondary aggregation row(s).`,
+      `customerId=${customerId}: merged GSTR-2B metrics into ${dedupedPrimaryRows.length} primary and ${dedupedCoapplicantRows.length} secondary aggregation row(s).`,
     );
   }
 
@@ -658,11 +666,11 @@ export class GstAggregationService {
       }
     }
 
-    const existingSecondaryRows = await this.secondaryAggRepo.find({
+    const existingCoapplicantRows = await this.secondaryAggRepo.find({
       where: { customerId },
     });
     const existingSecondaryByLoan = new Map<string, SecondaryGstAggregation>();
-    for (const row of existingSecondaryRows) {
+    for (const row of existingCoapplicantRows) {
       if (row.associatedLoanId) {
         existingSecondaryByLoan.set(row.associatedLoanId, row);
       }
@@ -674,7 +682,7 @@ export class GstAggregationService {
       .exec();
 
     const primaryRowsToSave: Partial<PrimaryGstAggregation>[] = [];
-    const secondaryRowsToSave: Partial<SecondaryGstAggregation>[] = [];
+    const coapplicantRowsToSave: Partial<SecondaryGstAggregation>[] = [];
 
     // Primary: unchanged (per upload row).
     for (const uploadRow of uploadRows) {
@@ -706,17 +714,17 @@ export class GstAggregationService {
     for (const [loanId, loanUploadRows] of this.groupUploadRowsByLoan(
       uploadRows,
     )) {
-      const consideredEntityPans =
+      const coapplicantEntityPans =
         this.collectDistinctConsideredPansForLoan(loanUploadRows);
-      if (consideredEntityPans.length === 0) {
+      if (coapplicantEntityPans.length === 0) {
         continue;
       }
 
       const loanGstr3bRecords = gstr3bRecords.filter(
         (record) => String(record.loanId ?? '').trim() === loanId,
       );
-      const consideredMetrics = computeLoanLevelConsideredGstr3bMetrics(
-        consideredEntityPans,
+      const coapplicantMetrics = computeLoanLevelCoapplicantGstr3bMetrics(
+        coapplicantEntityPans,
         loanGstr3bRecords,
       );
 
@@ -726,9 +734,9 @@ export class GstAggregationService {
         {
           ...preserveMetricKeys(
             existingSecondary?.aggregationVariable ?? null,
-            CONSIDERED_GSTR3B_METRIC_KEYS,
+            COAPPLICANT_GSTR3B_METRIC_KEYS,
           ),
-          ...(consideredMetrics as unknown as Record<string, unknown>),
+          ...(coapplicantMetrics as unknown as Record<string, unknown>),
         },
       );
       const cleanedSecondaryJson = this.removeAggregationKeys(
@@ -736,7 +744,7 @@ export class GstAggregationService {
         OBSOLETE_GSTR3B_KEYS,
       );
 
-      secondaryRowsToSave.push({
+      coapplicantRowsToSave.push({
         ...(existingSecondary?.id ? { id: existingSecondary.id } : {}),
         customerId,
         associatedLoanId: loanId,
@@ -745,8 +753,8 @@ export class GstAggregationService {
     }
 
     const dedupedPrimaryRows = this.dedupePrimaryRowsByLoanId(primaryRowsToSave);
-    const dedupedSecondaryRows = this.dedupeSecondaryRowsByLoanId(
-      secondaryRowsToSave,
+    const dedupedCoapplicantRows = this.dedupeSecondaryRowsByLoanId(
+      coapplicantRowsToSave,
     );
 
     if (dedupedPrimaryRows.length > 0) {
@@ -758,22 +766,22 @@ export class GstAggregationService {
       );
     }
 
-    if (dedupedSecondaryRows.length > 0) {
+    if (dedupedCoapplicantRows.length > 0) {
       await this.aggregationHistoryService.upsertSecondaryAggregation(
         this.secondaryAggRepo,
-        dedupedSecondaryRows,
+        dedupedCoapplicantRows,
         existingSecondaryByLoan,
         HISTORY_SOURCE_GSTR3B,
       );
     }
 
     this.logger.log(
-      `customerId=${customerId}: merged GSTR-3B metrics into ${dedupedPrimaryRows.length} primary and ${dedupedSecondaryRows.length} secondary aggregation row(s).`,
+      `customerId=${customerId}: merged GSTR-3B metrics into ${dedupedPrimaryRows.length} primary and ${dedupedCoapplicantRows.length} secondary aggregation row(s).`,
     );
   }
 
   /**
-   * Called when a gstr-track job finishes. Merges PRIMARY_* / CONSIDERED_*
+   * Called when a gstr-track job finishes. Merges PRIMARY_* / COAPPLICANT_*
    * return-period metrics into primary_gst_aggregation / secondary_gst_aggregation
    * (loan-scoped SUM of per-PAN counts).
    */
@@ -818,7 +826,7 @@ export class GstAggregationService {
   }
 
   /**
-   * Loan-level PRIMARY_* + CONSIDERED_* return-period metrics for
+   * Loan-level PRIMARY_* + COAPPLICANT_* return-period metrics for
    * verify-and-fetch/gstr-track: SUM(per PAN counts) GROUP BY associated_loan_id.
    */
   async runGstrTrackAggregationForCustomer(
@@ -847,11 +855,11 @@ export class GstAggregationService {
       }
     }
 
-    const existingSecondaryRows = await this.secondaryAggRepo.find({
+    const existingCoapplicantRows = await this.secondaryAggRepo.find({
       where: { customerId },
     });
     const existingSecondaryByLoan = new Map<string, SecondaryGstAggregation>();
-    for (const row of existingSecondaryRows) {
+    for (const row of existingCoapplicantRows) {
       if (row.associatedLoanId) {
         existingSecondaryByLoan.set(row.associatedLoanId, row);
       }
@@ -863,7 +871,7 @@ export class GstAggregationService {
       .exec();
 
     const primaryRowsToSave: Partial<PrimaryGstAggregation>[] = [];
-    const secondaryRowsToSave: Partial<SecondaryGstAggregation>[] = [];
+    const coapplicantRowsToSave: Partial<SecondaryGstAggregation>[] = [];
 
     for (const [loanId, loanUploadRows] of this.groupUploadRowsByLoan(
       uploadRows,
@@ -901,14 +909,14 @@ export class GstAggregationService {
         });
       }
 
-      const consideredPans =
+      const coapplicantPans =
         this.collectDistinctConsideredPansForLoan(loanUploadRows);
-      if (consideredPans.length === 0) {
+      if (coapplicantPans.length === 0) {
         continue;
       }
 
-      const metrics = computeConsideredGstrTrackAggregationMetricsForPans(
-        consideredPans,
+      const metrics = computeCoapplicantGstrTrackAggregationMetricsForPans(
+        coapplicantPans,
         loanTrackRecords as Array<Record<string, any>>,
       );
 
@@ -918,13 +926,13 @@ export class GstAggregationService {
         {
           ...preserveMetricKeys(
             existingSecondary?.aggregationVariable ?? null,
-            CONSIDERED_GSTR_TRACK_METRIC_KEYS,
+            COAPPLICANT_GSTR_TRACK_METRIC_KEYS,
           ),
           ...(metrics as unknown as Record<string, unknown>),
         },
       );
 
-      secondaryRowsToSave.push({
+      coapplicantRowsToSave.push({
         ...(existingSecondary?.id ? { id: existingSecondary.id } : {}),
         customerId,
         associatedLoanId: loanId,
@@ -934,8 +942,8 @@ export class GstAggregationService {
 
     const dedupedPrimaryRows =
       this.dedupePrimaryRowsByLoanId(primaryRowsToSave);
-    const dedupedSecondaryRows =
-      this.dedupeSecondaryRowsByLoanId(secondaryRowsToSave);
+    const dedupedCoapplicantRows =
+      this.dedupeSecondaryRowsByLoanId(coapplicantRowsToSave);
 
     if (dedupedPrimaryRows.length > 0) {
       await this.aggregationHistoryService.upsertPrimaryAggregation(
@@ -946,17 +954,17 @@ export class GstAggregationService {
       );
     }
 
-    if (dedupedSecondaryRows.length > 0) {
+    if (dedupedCoapplicantRows.length > 0) {
       await this.aggregationHistoryService.upsertSecondaryAggregation(
         this.secondaryAggRepo,
-        dedupedSecondaryRows,
+        dedupedCoapplicantRows,
         existingSecondaryByLoan,
         HISTORY_SOURCE_GSTR_TRACK,
       );
     }
 
     this.logger.log(
-      `customerId=${customerId}: merged GSTR track metrics into ${dedupedPrimaryRows.length} primary and ${dedupedSecondaryRows.length} secondary aggregation row(s).`,
+      `customerId=${customerId}: merged GSTR track metrics into ${dedupedPrimaryRows.length} primary and ${dedupedCoapplicantRows.length} secondary aggregation row(s).`,
     );
   }
 
@@ -1187,9 +1195,9 @@ export class GstAggregationService {
 
   /**
 
-   * CONSIDERED_ENTITY aggregation → secondary_gst_aggregation table.
+   * COAPPLICANT_ENTITY aggregation → secondary_gst_aggregation table.
 
-   * Loan-scoped CONSIDERED_* compliance metrics (verify-and-fetch):
+   * Loan-scoped COAPPLICANT_* compliance metrics (verify-and-fetch):
 
    * - TOTAL/ACTIVE/CANCELLED/SUSPENDED = COUNT(DISTINCT considered_entity_gst_no)
 
@@ -1239,7 +1247,7 @@ export class GstAggregationService {
     for (const [loanId, loanUploadRows] of this.groupUploadRowsByLoan(
       uploadRows,
     )) {
-      const consideredUploadRows =
+      const coapplicantUploadRows =
         this.filterUploadRowsWithConsideredPan(loanUploadRows);
       const loanComplianceRecords =
         this.getLoanConsideredEntityComplianceRecords(
@@ -1248,26 +1256,26 @@ export class GstAggregationService {
         );
 
       if (
-        consideredUploadRows.length === 0 &&
+        coapplicantUploadRows.length === 0 &&
         loanComplianceRecords.length === 0
       ) {
         continue;
       }
 
       const metrics = this.computeConsideredComplianceAggregationMetrics(
-        consideredUploadRows,
+        coapplicantUploadRows,
         loanComplianceRecords,
       );
 
       const existingJson = existingByLoan.get(loanId) ?? null;
       let aggregationObject = this.buildAggregationObject(
         existingJson,
-        CONSIDERED_GST_COMPLIANCE_METRIC_KEYS,
+        COAPPLICANT_GST_COMPLIANCE_METRIC_KEYS,
         metrics,
       );
       aggregationObject = this.removeAggregationKeys(
         aggregationObject,
-        OBSOLETE_SECONDARY_COMPLIANCE_KEYS,
+        OBSOLETE_LEGACY_COMPLIANCE_KEYS,
       );
 
       rowsByLoan.set(loanId, {
@@ -1341,20 +1349,20 @@ export class GstAggregationService {
   }
 
   /**
-   * Loan-level CONSIDERED_* metrics for verify-and-fetch secondary aggregation.
+   * Loan-level COAPPLICANT_* metrics for verify-and-fetch secondary aggregation.
    * Upload rows must already be filtered to considered_entity_pan present where
    * DISTINCT GSTIN counts come from the upload table; status/e-invoice/address
-   * come from Mongo compliance docs for CONSIDERED_ENTITY on that loan.
+   * come from Mongo compliance docs for COAPPLICANT_ENTITY on that loan.
    */
   computeConsideredComplianceAggregationMetrics(
-    consideredUploadRows: UploadRow[],
+    coapplicantUploadRows: UploadRow[],
     complianceRecords: GstComplianceRecord[],
   ): ConsideredComplianceAggregationMetrics {
     const totalGstCount =
-      this.countDistinctConsideredGstinsForLoan(consideredUploadRows);
+      this.countDistinctCoapplicantGstinsForLoan(coapplicantUploadRows);
 
     const uploadGstins = new Set(
-      consideredUploadRows
+      coapplicantUploadRows
         .map((row) =>
           String(row.considered_entity_gst_no ?? '')
             .trim()
@@ -1373,13 +1381,13 @@ export class GstAggregationService {
     const metrics = this.computePanLevelMetrics(scopedComplianceRecords);
 
     return {
-      CONSIDERED_TOTAL_GST_COUNT: totalGstCount,
-      CONSIDERED_ACTIVE_GST_COUNT: metrics.activeGstCount,
-      CONSIDERED_CANCELLED_GST_COUNT: metrics.cancelledGstCount,
-      CONSIDERED_SUSPENDED_GST_COUNT: metrics.suspendedGstCount,
-      CONSIDERED_ADDRESS_CHANGE_COUNT: metrics.addressChangeCount,
-      CONSIDERED_TOTAL_EINVOICE_COUNT: metrics.totalEinvoiceCount,
-      CONSIDERED_EINVOICE_ENABLED_COUNT: metrics.einvoiceEnabledCount,
+      COAPPLICANT_TOTAL_GST_COUNT: totalGstCount,
+      COAPPLICANT_ACTIVE_GST_COUNT: metrics.activeGstCount,
+      COAPPLICANT_CANCELLED_GST_COUNT: metrics.cancelledGstCount,
+      COAPPLICANT_SUSPENDED_GST_COUNT: metrics.suspendedGstCount,
+      COAPPLICANT_ADDRESS_CHANGE_COUNT: metrics.addressChangeCount,
+      COAPPLICANT_TOTAL_EINVOICE_COUNT: metrics.totalEinvoiceCount,
+      COAPPLICANT_EINVOICE_ENABLED_COUNT: metrics.einvoiceEnabledCount,
     };
   }
 
@@ -1740,7 +1748,7 @@ export class GstAggregationService {
    * COUNT(DISTINCT considered_entity_gst_no) for upload rows on a loan where
    * considered_entity_pan is present and gstin is non-empty.
    */
-  private countDistinctConsideredGstinsForLoan(loanRows: UploadRow[]): number {
+  private countDistinctCoapplicantGstinsForLoan(loanRows: UploadRow[]): number {
     const gstins = new Set<string>();
 
     for (const row of this.filterUploadRowsWithConsideredPan(loanRows)) {
@@ -1783,10 +1791,10 @@ export class GstAggregationService {
 
   /**
    * COUNT(considered_entity_gst_no) for all upload rows on a loan (not distinct).
-   * @deprecated Prefer countDistinctConsideredGstinsForLoan
+   * @deprecated Prefer countDistinctCoapplicantGstinsForLoan
    */
   private countConsideredGstinsForLoan(loanRows: UploadRow[]): number {
-    return this.countDistinctConsideredGstinsForLoan(loanRows);
+    return this.countDistinctCoapplicantGstinsForLoan(loanRows);
   }
 
   private getLoanPrimaryComplianceRecords(
@@ -1819,7 +1827,7 @@ export class GstAggregationService {
 
       return (
         String(record.entityType ?? '').trim().toUpperCase() ===
-        'CONSIDERED_ENTITY'
+        'COAPPLICANT_ENTITY'
       );
     });
   }
@@ -2002,9 +2010,9 @@ export class GstAggregationService {
 
       primaryRecords: allRecords.filter((r) => r.entityType === 'PRIMARY'),
 
-      secondaryRecords: allRecords.filter(
+      coapplicantRecords: allRecords.filter(
 
-        (r) => r.entityType === 'CONSIDERED_ENTITY',
+        (r) => isCoapplicantEntityType(r.entityType),
 
       ),
 
@@ -2149,13 +2157,13 @@ export class GstAggregationService {
 
 
 
-      const secondaryGst = (r.considered_entity_gst_no ?? '')
+      const coapplicantGst = (r.considered_entity_gst_no ?? '')
 
         .trim()
 
         .toUpperCase();
 
-      if (secondaryGst && this.isValidGstin(secondaryGst)) {
+      if (coapplicantGst && this.isValidGstin(coapplicantGst)) {
 
         units.push({
 
@@ -2163,11 +2171,11 @@ export class GstAggregationService {
 
           loanId,
 
-          gstin: secondaryGst,
+          gstin: coapplicantGst,
 
           pan: r.considered_entity_pan ?? null,
 
-          entityType: 'CONSIDERED_ENTITY',
+          entityType: 'COAPPLICANT_ENTITY',
 
         });
 

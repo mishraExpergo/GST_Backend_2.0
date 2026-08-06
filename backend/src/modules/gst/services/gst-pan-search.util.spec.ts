@@ -30,14 +30,14 @@ describe('gst-pan-search.util', () => {
     ]);
   });
 
-  it('builds primary vs considered listed/unlisted blocks', () => {
+  it('builds primary vs coapplicant listed/unlisted blocks', () => {
     const result = buildLoanPanSearchResult(
       {
         loanId: 'LN000001',
         customerId: 'CUST0001',
         primaryPan: 'AAACN0255D',
         primaryGstins: ['27AAACN0255D1ZM'],
-        consideredEntities: [
+        coapplicantEntities: [
           {
             pan: 'AABCT1234A',
             gstins: ['29AABCT1234A1Z5'],
@@ -79,14 +79,14 @@ describe('gst-pan-search.util', () => {
                 {
                   data: {
                     gstin: '29AABCT1234A1Z5',
-                    lgnm: 'Secondary Co',
+                    lgnm: 'Coapplicant Co',
                     tradeNam: null,
                   },
                 },
                 {
                   data: {
                     gstin: '29AABCT1234A2Z6',
-                    lgnm: 'Secondary Co',
+                    lgnm: 'Coapplicant Co',
                     tradeNam: null,
                   },
                 },
@@ -106,10 +106,10 @@ describe('gst-pan-search.util', () => {
         listedGstins: ['27AAACN0255D1ZM'],
         unlistedGstins: ['27AAACN0255D2ZN'],
       },
-      consideredEntities: [
+      coapplicantEntities: [
         {
           pan: 'AABCT1234A',
-          companyName: 'Secondary Co',
+          companyName: 'Coapplicant Co',
           listedGstins: ['29AABCT1234A1Z5'],
           unlistedGstins: ['29AABCT1234A2Z6'],
         },

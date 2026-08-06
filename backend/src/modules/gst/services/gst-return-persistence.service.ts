@@ -14,7 +14,7 @@ import {
 } from './gst-return-month-coverage.util';
 
 export type GstReturnType = 'GSTR-2B' | 'GSTR-3B';
-export type GstEntityType = 'PRIMARY' | 'CONSIDERED_ENTITY';
+export type GstEntityType = 'PRIMARY' | 'COAPPLICANT_ENTITY';
 
 export interface ReturnPersistenceContext {
   customerId: string;
@@ -290,14 +290,14 @@ export class GstReturnPersistenceService {
         });
       }
 
-      const secondaryGst = (row.considered_entity_gst_no ?? '').trim().toUpperCase();
-      if (secondaryGst) {
+      const coapplicantGst = (row.considered_entity_gst_no ?? '').trim().toUpperCase();
+      if (coapplicantGst) {
         units.push({
           customerId,
           loanId,
-          gstin: secondaryGst,
+          gstin: coapplicantGst,
           pan: row.considered_entity_pan ?? null,
-          entityType: 'CONSIDERED_ENTITY',
+          entityType: 'COAPPLICANT_ENTITY',
         });
       }
     }

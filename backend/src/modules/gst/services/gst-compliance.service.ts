@@ -3,6 +3,7 @@ import {
   Inject,
   Injectable,
   Logger,
+  OnModuleInit,
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -25,8 +26,9 @@ import {
   buildGstr1ReturnsFromResponse,
   hasTrackFilingRecords,
 } from './gst-gstr-track-aggregation.util';
+import { runWithDbLogContext } from '../../../database/db-query-log/db-query-log.context';
 
-type GstEntityType = 'PRIMARY' | 'CONSIDERED_ENTITY';
+type GstEntityType = 'PRIMARY' | 'COAPPLICANT_ENTITY';
 
 interface SourceRow {
   loan_id: string;
@@ -59,7 +61,7 @@ const VERIFY_TRACK_OPERATION = 'GSTIN_VERIFY_AND_FETCH_GSTR_TRACK';
 const TRACK_SKIP_STATUSES = new Set(['FETCHED', 'NO_RECORD', 'INVALID_FY']);
 
 @Injectable()
-export class GstComplianceService {
+export class GstComplianceService implements OnModuleInit {
   private readonly logger = new Logger(GstComplianceService.name);
 
   constructor(
@@ -88,6 +90,78 @@ export class GstComplianceService {
     @Inject('VERIFY_CHUNK_SERVICE')
     private readonly verifyChunkClient?: ClientProxy,
   ) {}
+
+  async onModuleInit(): Promise<void> {
+    await this.migrateGstrTrackIndexes();
+  }
+
+  /**
+   * Track data is unique per loanId+gstin+financialYear. Older DBs still have
+   * unique loanId+gstin, which blocks inserting a second FY for the same GSTIN.
+   */
+  private async migrateGstrTrackIndexes(): Promise<void> {
+    if (!this.gstrTrackComplianceModel) {
+      return;
+    }
+
+    try {
+      await this.gstrTrackComplianceModel.collection.dropIndex('loanId_1_gstin_1');
+      this.logger.log(
+        'Dropped legacy unique index loanId_1_gstin_1 on gst_gstR1_returns_compliance_data.',
+      );
+    } catch (err) {
+      const code = (err as { code?: number | string })?.code;
+      // 27 / IndexNotFound — already migrated
+      if (code !== 27 && code !== 'IndexNotFound') {
+        this.logger.warn(
+          `Could not drop legacy loanId_1_gstin_1 index: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    try {
+      await this.gstrTrackComplianceModel.syncIndexes();
+    } catch (err) {
+      this.logger.warn(
+        `Could not sync GSTR track indexes: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  private async upsertGstrTrackRecord(
+    loanId: string,
+    gstin: string,
+    financialYear: string,
+    set: Record<string, unknown>,
+  ): Promise<void> {
+    if (!this.gstrTrackComplianceModel) {
+      throw new ServiceUnavailableException(
+        'MongoDB is not enabled. Set ENABLE_MONGO=true and configure MONGO_URI to store GSTR track data.',
+      );
+    }
+
+    const filter = { loanId, gstin, financialYear };
+    try {
+      await this.gstrTrackComplianceModel.updateOne(
+        filter,
+        { $set: set },
+        { upsert: true },
+      );
+    } catch (err) {
+      const code = (err as { code?: number })?.code;
+      if (code !== 11000) {
+        throw err;
+      }
+      // Legacy unique(loanId,gstin) still present: overwrite that document.
+      await this.gstrTrackComplianceModel.updateOne(
+        { loanId, gstin },
+        { $set: set },
+      );
+      this.logger.warn(
+        `GSTR track upsert fell back to loanId+gstin update for ${loanId}/${gstin} (legacy unique index).`,
+      );
+    }
+  }
 
   private get batchSize(): number {
     return Math.max(1, Number(this.config.get('GST_VERIFY_BATCH_SIZE', '50')));
@@ -198,75 +272,88 @@ export class GstComplianceService {
   }
 
   async processVerifyParent(jobId: string, tableName: string): Promise<void> {
-    try {
-      await this.gstService.updateJobStatus(jobId, 'PROCESSING');
-      const job = await this.gstService.getJobStatus(jobId);
-      const operation = String(job?.metadata?.operation ?? '').trim();
+    return runWithDbLogContext({ jobId, source: 'job' }, async () => {
+      try {
+        await this.gstService.updateJobStatus(jobId, 'PROCESSING');
+        const job = await this.gstService.getJobStatus(jobId);
+        const operation = String(job?.metadata?.operation ?? '').trim();
 
-      const allRows = await this.fetchSourceRows(tableName);
-      const financialYear = String(job?.metadata?.financialYear ?? '').trim();
-      const { pending: rows, skippedExisting } =
-        operation === VERIFY_FETCH_OPERATION
-          ? await this.partitionUnprocessedRows(allRows, this.complianceModel!)
-          : operation === VERIFY_TRACK_OPERATION
-            ? await this.partitionUnprocessedTrackRows(allRows, financialYear)
-            : { pending: allRows, skippedExisting: 0 };
+        const allRows = await this.fetchSourceRows(tableName);
+        const financialYear = String(job?.metadata?.financialYear ?? '').trim();
+        const { pending: rows, skippedExisting } =
+          operation === VERIFY_FETCH_OPERATION
+            ? await this.partitionUnprocessedRows(allRows, this.complianceModel!)
+            : operation === VERIFY_TRACK_OPERATION
+              ? await this.partitionUnprocessedTrackRows(allRows, financialYear)
+              : { pending: allRows, skippedExisting: 0 };
 
-      await this.gstService.mergeJobMetadata(jobId, {
-        totalSourceRows: allRows.length,
-        skippedAlreadyExists: skippedExisting,
-      });
-
-      const batches = this.chunk(rows, this.batchSize);
-      await this.gstService.setJobTotalChunks(jobId, batches.length);
-
-      if (batches.length === 0) {
-        await this.gstService.finishJob(jobId, {
-          totalRows: 0,
-          verified: 0,
-          stored: 0,
-          skippedNoGstin: 0,
-          skippedInvalidGstin: 0,
-          skippedNoStatus: 0,
-          failed: 0,
-          note:
-            skippedExisting > 0
-              ? 'All rows already present in MongoDB; nothing to fetch.'
-              : 'No rows found in source table.',
-        });
-        return;
-      }
-
-      for (let i = 0; i < batches.length; i++) {
-        const task = await this.gstService.createTask(jobId, {
-          tableName,
-          batchIndex: i,
-          totalBatches: batches.length,
-          rows: batches[i],
+        await this.gstService.mergeJobMetadata(jobId, {
+          totalSourceRows: allRows.length,
+          skippedAlreadyExists: skippedExisting,
         });
 
-        if (this.verifyChunkClient) {
-          this.verifyChunkClient.emit('verify_chunk', {
-            taskId: task.id,
-            jobId,
+        const batches = this.chunk(rows, this.batchSize);
+        await this.gstService.setJobTotalChunks(jobId, batches.length);
+
+        if (batches.length === 0) {
+          await this.gstService.finishJob(jobId, {
+            totalRows: 0,
+            verified: 0,
+            stored: 0,
+            skippedNoGstin: 0,
+            skippedInvalidGstin: 0,
+            skippedNoStatus: 0,
+            failed: 0,
+            note:
+              skippedExisting > 0
+                ? 'All rows already present in MongoDB; nothing to fetch.'
+                : 'No rows found in source table.',
+          });
+          return;
+        }
+
+        for (let i = 0; i < batches.length; i++) {
+          const task = await this.gstService.createTask(jobId, {
             tableName,
+            batchIndex: i,
+            totalBatches: batches.length,
             rows: batches[i],
           });
-        } else {
-          await this.processVerifyChunk(task.id, jobId, tableName, batches[i]);
-        }
-      }
 
-      this.logger.log(`Dispatched ${batches.length} verify batches for Job ${jobId}`);
-    } catch (err) {
-      await this.gstService.updateJobStatus(jobId, 'FAILED', (err as Error).message);
-      this.logger.error(
-        `verify-parent job ${jobId} failed: ${(err as Error).message}`,
-      );
-    }
+          if (this.verifyChunkClient) {
+            this.verifyChunkClient.emit('verify_chunk', {
+              taskId: task.id,
+              jobId,
+              tableName,
+              rows: batches[i],
+            });
+          } else {
+            await this.processVerifyChunk(task.id, jobId, tableName, batches[i]);
+          }
+        }
+
+        this.logger.log(`Dispatched ${batches.length} verify batches for Job ${jobId}`);
+      } catch (err) {
+        await this.gstService.updateJobStatus(jobId, 'FAILED', (err as Error).message);
+        this.logger.error(
+          `verify-parent job ${jobId} failed: ${(err as Error).message}`,
+        );
+      }
+    });
   }
 
   async processVerifyChunk(
+    taskId: string,
+    jobId: string,
+    tableName: string,
+    rows: SourceRow[],
+  ): Promise<void> {
+    return runWithDbLogContext({ jobId, source: 'job' }, async () =>
+      this.executeVerifyChunk(taskId, jobId, tableName, rows),
+    );
+  }
+
+  private async executeVerifyChunk(
     taskId: string,
     jobId: string,
     tableName: string,
@@ -525,33 +612,27 @@ export class GstComplianceService {
         (row.pan ?? '').trim().toUpperCase() ||
         (gstin.length >= 12 ? gstin.substring(2, 12) : '');
 
-      await this.gstrTrackComplianceModel.updateOne(
-        { loanId: row.loan_id, gstin, financialYear: normalizedFy },
-        {
-          $set: {
-            loanId: row.loan_id,
-            customerId: row.customer_id ?? null,
-            entityType: row.entity_type,
-            gstin,
-            gstNo: gstin,
-            pan,
-            sourceTable: tableName,
-            legalName,
-            status,
-            financialYear: normalizedFy,
-            returnType: 'GSTR-1',
-            returns: buildGstr1ReturnsFromResponse(response),
-            gstrResponse: response,
-            systemMetadata: {
-              fetchedAt: new Date().toISOString(),
-              dataSource: 'sandbox',
-              fetchMode: 'gstr-track',
-              financialYear: normalizedFy,
-            },
-          },
+      await this.upsertGstrTrackRecord(row.loan_id, gstin, normalizedFy, {
+        loanId: row.loan_id,
+        customerId: row.customer_id ?? null,
+        entityType: row.entity_type,
+        gstin,
+        gstNo: gstin,
+        pan,
+        sourceTable: tableName,
+        legalName,
+        status,
+        financialYear: normalizedFy,
+        returnType: 'GSTR-1',
+        returns: buildGstr1ReturnsFromResponse(response),
+        gstrResponse: response,
+        systemMetadata: {
+          fetchedAt: new Date().toISOString(),
+          dataSource: 'sandbox',
+          fetchMode: 'gstr-track',
+          financialYear: normalizedFy,
         },
-        { upsert: true },
-      );
+      });
       result.stored++;
       await this.markRowStatus(tableName, row.loan_id, status);
     } catch (err) {
@@ -763,7 +844,7 @@ export class GstComplianceService {
           username: rowUsername,
           gst_no: r.considered_entity_gst_no,
           pan: r.considered_entity_pan ?? null,
-          entity_type: 'CONSIDERED_ENTITY',
+          entity_type: 'COAPPLICANT_ENTITY',
         });
       }
     }
@@ -937,6 +1018,182 @@ export class GstComplianceService {
       out.push(items.slice(i, i + size));
     }
     return out;
+  }
+
+  /**
+   * Single-GSTIN GSTR track fetch for testing.
+   * Same Sandbox public track + Mongo upsert + track aggregation as the
+   * batch verify-and-fetch/gstr-track job, but runs synchronously for one GSTIN.
+   */
+  async fetchGstrTrackForSingleGstin(params: {
+    gstin: string;
+    financialYear: string;
+    customerId: string;
+    associatedLoanId: string;
+    tableName?: string;
+    forceRefresh?: boolean;
+  }): Promise<Record<string, any>> {
+    if (!this.gstrTrackComplianceModel) {
+      throw new ServiceUnavailableException(
+        'MongoDB is not enabled. Set ENABLE_MONGO=true and configure MONGO_URI to store GSTR track data.',
+      );
+    }
+
+    const gstin = String(params.gstin ?? '')
+      .trim()
+      .toUpperCase();
+    if (!gstin) {
+      throw new BadRequestException('"gstin" is required.');
+    }
+    if (!this.isValidGstin(gstin)) {
+      throw new BadRequestException(`Invalid GSTIN format "${params.gstin}".`);
+    }
+
+    const customerId = String(params.customerId ?? '').trim();
+    const associatedLoanId = String(params.associatedLoanId ?? '').trim();
+    if (!customerId) {
+      throw new BadRequestException('"customerId" is required.');
+    }
+    if (!associatedLoanId) {
+      throw new BadRequestException('"associatedLoanId" is required.');
+    }
+
+    let normalizedFy: string;
+    try {
+      normalizedFy = this.gstApiService.formatSandboxFinancialYear(
+        params.financialYear,
+      );
+    } catch (err) {
+      throw new BadRequestException((err as Error).message);
+    }
+
+    const tableName = this.sanitizeTableName(params.tableName);
+    const forceRefresh = params.forceRefresh !== false;
+
+    const existing = await this.gstrTrackComplianceModel
+      .findOne({
+        loanId: associatedLoanId,
+        gstin,
+        financialYear: normalizedFy,
+        status: { $in: Array.from(TRACK_SKIP_STATUSES) },
+      })
+      .lean()
+      .exec();
+
+    if (existing && !forceRefresh) {
+      await this.gstAggregationService.runGstrTrackAggregationForCustomer(
+        customerId,
+        tableName,
+      );
+      return {
+        message:
+          'GSTR track data already present in MongoDB; aggregation re-run for customer.',
+        gstin,
+        financialYear: normalizedFy,
+        customerId,
+        associatedLoanId,
+        fromCache: true,
+        stored: false,
+        status: existing.status,
+        aggregated: true,
+        data: existing.gstrResponse ?? existing,
+      };
+    }
+
+    const resolved = await this.resolveTrackSourceRow({
+      gstin,
+      customerId,
+      associatedLoanId,
+      tableName,
+    });
+
+    const response = await this.gstApiService.trackGstrReturns(
+      gstin,
+      normalizedFy,
+    );
+    const hasRecords = hasTrackFilingRecords(response);
+    const status = hasRecords ? 'FETCHED' : 'NO_RECORD';
+    const legalName = String(
+      response?.data?.data?.lgnm ??
+        response?.data?.lgnm ??
+        response?.lgnm ??
+        '',
+    );
+    const pan =
+      (resolved.pan ?? '').trim().toUpperCase() ||
+      (gstin.length >= 12 ? gstin.substring(2, 12) : '');
+
+    await this.upsertGstrTrackRecord(associatedLoanId, gstin, normalizedFy, {
+      loanId: associatedLoanId,
+      customerId,
+      entityType: resolved.entityType,
+      gstin,
+      gstNo: gstin,
+      pan,
+      sourceTable: tableName,
+      legalName,
+      status,
+      financialYear: normalizedFy,
+      returnType: 'GSTR-1',
+      returns: buildGstr1ReturnsFromResponse(response),
+      gstrResponse: response,
+      systemMetadata: {
+        fetchedAt: new Date().toISOString(),
+        dataSource: 'sandbox',
+        fetchMode: 'gstr-track-single',
+        financialYear: normalizedFy,
+      },
+    });
+
+    await this.markRowStatus(tableName, associatedLoanId, status);
+
+    await this.gstAggregationService.runGstrTrackAggregationForCustomer(
+      customerId,
+      tableName,
+    );
+
+    return {
+      message: 'GSTR track data fetched, stored, and aggregation completed.',
+      gstin,
+      financialYear: normalizedFy,
+      customerId,
+      associatedLoanId,
+      entityType: resolved.entityType,
+      fromCache: false,
+      stored: true,
+      status,
+      aggregated: true,
+      data: response,
+    };
+  }
+
+  private async resolveTrackSourceRow(params: {
+    gstin: string;
+    customerId: string;
+    associatedLoanId: string;
+    tableName: string;
+  }): Promise<{ pan: string | null; entityType: GstEntityType }> {
+    const rows = await this.fetchSourceRows(params.tableName);
+    const match = rows.find(
+      (row) =>
+        row.loan_id === params.associatedLoanId &&
+        String(row.customer_id ?? '').trim() === params.customerId &&
+        String(row.gst_no ?? '')
+          .trim()
+          .toUpperCase() === params.gstin,
+    );
+
+    if (match) {
+      return {
+        pan: match.pan,
+        entityType: match.entity_type,
+      };
+    }
+
+    return {
+      pan: params.gstin.length >= 12 ? params.gstin.substring(2, 12) : null,
+      entityType: 'PRIMARY',
+    };
   }
 
   private sanitizeTableName(rawTableName?: string): string {

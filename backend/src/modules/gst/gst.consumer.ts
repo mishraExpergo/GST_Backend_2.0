@@ -9,7 +9,7 @@ interface SourceRow {
   username: string | null;
   gst_no: string | null;
   pan: string | null;
-  entity_type: 'PRIMARY' | 'CONSIDERED_ENTITY';
+  entity_type: 'PRIMARY' | 'COAPPLICANT_ENTITY';
 }
 
 @Controller()

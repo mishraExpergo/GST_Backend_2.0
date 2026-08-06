@@ -9,14 +9,19 @@ import { toNumber } from './config/database.config';
 import { GstModule } from './modules/gst/gst.module';
 import { AuthModule } from './auth/auth.module';
 import { SchemaBootstrapService } from './database/schema-bootstrap.service';
+import { DbQueryLogModule } from './database/db-query-log/db-query-log.module';
+import { DbQueryTypeOrmLogger } from './database/db-query-log/db-query-log.typeorm-logger';
+import { isDbQueryLoggingEnabled } from './database/db-query-log/db-query-log.context';
 
 const enableMongo = process.env.ENABLE_MONGO === 'true';
+const enableDbQueryLogs = isDbQueryLoggingEnabled();
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
     }),
+    DbQueryLogModule,
     ...(enableMongo
       ? [
           MongooseModule.forRootAsync({
@@ -48,6 +53,10 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
               : false,
           synchronize:
             configService.get<string>('POSTGRES_SYNC', 'false') === 'true',
+          // Capture SQL when ENABLE_DB_QUERY_LOGS=true (custom logger → db_query_logs).
+          logging: enableDbQueryLogs ? (['query', 'error'] as const) : false,
+          logger: enableDbQueryLogs ? new DbQueryTypeOrmLogger() : undefined,
+          maxQueryExecutionTime: enableDbQueryLogs ? 1000 : undefined,
           // Retry when RDS is temporarily at max_connections (53300).
           retryAttempts: 10,
           retryDelay: 3000,

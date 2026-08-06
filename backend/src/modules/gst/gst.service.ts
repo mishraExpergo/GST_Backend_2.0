@@ -24,6 +24,13 @@ import {
   UploadLoanContext,
 } from './services/gst-pan-search.util';
 import { GstApiService } from './services/gst-api.service';
+import { runWithDbLogContext } from '../../database/db-query-log/db-query-log.context';
+import {
+  mapUploadRowsForApi,
+  renameMetricKeyToCoapplicant,
+  resolveAggregationTypeParam,
+  toApiEntityType,
+} from './services/gst-terminology.util';
 
 type PgType = 'INTEGER' | 'NUMERIC' | 'TIMESTAMP' | 'BOOLEAN' | 'TEXT';
 
@@ -142,7 +149,10 @@ export class GstService {
       return {
         loanId,
         count: data.length,
-        data,
+        data: data.map((doc: Record<string, any>) => ({
+          ...doc,
+          entityType: toApiEntityType(doc.entityType) ?? doc.entityType,
+        })),
       };
     } catch (err) {
       this.logger.error('Error fetching compliance data', err);
@@ -683,7 +693,7 @@ export class GstService {
 
   async getAggregationTable(
     loanId: string,
-    type: 'primary' | 'secondary' = 'primary',
+    type: 'primary' | 'secondary' | 'coapplicant' = 'primary',
   ): Promise<{ rows: AggregationRow[]; debug: Record<string, unknown> }> {
     const trimmedLoanId = loanId?.trim();
 
@@ -691,25 +701,30 @@ export class GstService {
       throw new BadRequestException('loanId is required.');
     }
 
+    const resolvedType = resolveAggregationTypeParam(type);
+
     const debug: Record<string, unknown> = {
       receivedLoanId: trimmedLoanId,
       requestedType: type,
+      resolvedType,
     };
 
     let rows: any[] = [];
 
-    if (type === 'primary') {
+    if (resolvedType === 'primary') {
       rows = await this.dataSource.query(
         'SELECT * FROM public.primary_gst_aggregation WHERE TRIM(associated_loan_id) = TRIM($1)',
         [trimmedLoanId],
       );
       debug.source = 'primary_gst_aggregation';
     } else {
+      // Table name unchanged for now; exposed to API as coapplicant aggregation.
       rows = await this.dataSource.query(
         'SELECT * FROM public.secondary_gst_aggregation WHERE TRIM(associated_loan_id) = TRIM($1)',
         [trimmedLoanId],
       );
       debug.source = 'secondary_gst_aggregation';
+      debug.apiType = 'coapplicant';
     }
 
     debug.rowCount = rows?.length ?? 0;
@@ -721,10 +736,13 @@ export class GstService {
       const parsed = this.parseAggregationVariable(row.aggregation_variable);
 
       for (const [key, value] of Object.entries(parsed)) {
+        const normalizedKey = renameMetricKeyToCoapplicant(key);
         const outputField =
-          type === 'secondary' && hasMultipleRows && row.customer_id
-            ? `${key} (${row.customer_id})`
-            : key;
+          resolvedType === 'coapplicant' &&
+          hasMultipleRows &&
+          row.customer_id
+            ? `${normalizedKey} (${row.customer_id})`
+            : normalizedKey;
 
         result.push({
           outputField,
@@ -755,7 +773,12 @@ export class GstService {
     if (raw === null || raw === undefined) return {};
 
     if (typeof raw === 'object') {
-      return raw as Record<string, unknown>;
+      return Object.fromEntries(
+        Object.entries(raw as Record<string, unknown>).map(([key, value]) => [
+          renameMetricKeyToCoapplicant(key),
+          value,
+        ]),
+      );
     }
 
     const str = String(raw).trim();
@@ -769,7 +792,15 @@ export class GstService {
 
     try {
       const parsed = JSON.parse(jsonLike);
-      return typeof parsed === 'object' && parsed !== null ? parsed : {};
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        return Object.fromEntries(
+          Object.entries(parsed as Record<string, unknown>).map(([key, value]) => [
+            renameMetricKeyToCoapplicant(key),
+            value,
+          ]),
+        );
+      }
+      return {};
     } catch {
       this.logger.warn(
         `Failed to parse aggregation_variable as JSON. Raw (first 200 chars): ${str.slice(0, 200)}`,
@@ -818,7 +849,7 @@ export class GstService {
         total,
         page: safePage,
         limit: safeLimit,
-        data: rows,
+        data: mapUploadRowsForApi(rows ?? []),
       };
     } catch (err) {
       this.logger.error(
@@ -977,6 +1008,16 @@ export class GstService {
    * Worker method to process Excel/CSV import from disk (append or migrate schema).
    */
   async processExcel(filePath: string, rawTableName: string, jobId: string) {
+    return runWithDbLogContext({ jobId, source: 'job' }, () =>
+      this.executeProcessExcel(filePath, rawTableName, jobId),
+    );
+  }
+
+  private async executeProcessExcel(
+    filePath: string,
+    rawTableName: string,
+    jobId: string,
+  ) {
     await this.jobRepo.update(jobId, { status: 'PROCESSING' });
     const tableName = this.sanitizeIdentifier(rawTableName);
 
@@ -1415,7 +1456,7 @@ export class GstService {
       customerId: normalizedCustomerId,
       primaryPan,
       primaryGstins: [...primaryGstins].sort(),
-      consideredEntities: [...consideredMap.entries()]
+      coapplicantEntities: [...consideredMap.entries()]
         .map(([pan, gstins]) => ({
           pan,
           gstins: [...gstins].sort(),
@@ -1467,7 +1508,7 @@ export class GstService {
 
     const pansToSearch = [
       ...(context.primaryPan ? [context.primaryPan] : []),
-      ...context.consideredEntities.map((e) => e.pan),
+      ...context.coapplicantEntities.map((e) => e.pan),
     ];
     const uniquePans = [...new Set(pansToSearch)];
 
@@ -1497,18 +1538,18 @@ export class GstService {
     const primarySandbox = context.primaryPan
       ? sandboxByPan.get(context.primaryPan) ?? null
       : null;
-    const consideredSandboxByPan = new Map<string, Record<string, any>>();
-    for (const entity of context.consideredEntities) {
+    const coapplicantSandboxByPan = new Map<string, Record<string, any>>();
+    for (const entity of context.coapplicantEntities) {
       const sandbox = sandboxByPan.get(entity.pan);
       if (sandbox) {
-        consideredSandboxByPan.set(entity.pan, sandbox);
+        coapplicantSandboxByPan.set(entity.pan, sandbox);
       }
     }
 
     const result = buildLoanPanSearchResult(
       context,
       primarySandbox,
-      consideredSandboxByPan,
+      coapplicantSandboxByPan,
     );
     const stored = await this.upsertLoanPanSearchResult(result, stateCode);
     return { ...result, stored };
@@ -1548,7 +1589,7 @@ export class GstService {
       loanId,
       customerId,
       primary: result.primary,
-      consideredEntities: result.consideredEntities ?? [],
+      coapplicantEntities: result.coapplicantEntities ?? [],
     };
 
     const doc = await model.findOneAndUpdate(
@@ -1560,7 +1601,7 @@ export class GstService {
           customerId,
           searchKey,
           primary: payload.primary,
-          consideredEntities: payload.consideredEntities,
+          coapplicantEntities: payload.coapplicantEntities,
           payload,
         },
       },
@@ -1628,7 +1669,7 @@ export class GstService {
       customerId: doc.customerId,
       searchKey: doc.searchKey,
       primary: doc.primary ?? null,
-      consideredEntities: doc.consideredEntities ?? [],
+      coapplicantEntities: doc.coapplicantEntities ?? (doc as any).consideredEntities ?? [],
       createdAt: doc.createdAt ?? null,
       updatedAt: doc.updatedAt ?? null,
     };
@@ -1691,7 +1732,7 @@ export class GstService {
           customerId,
           searchKey,
           primary: null,
-          consideredEntities: [],
+          coapplicantEntities: [],
           stored: false,
         })),
       };

@@ -9,6 +9,7 @@ import {
 } from './gst-return-persistence.service';
 import { Gstr2bComplianceRecord } from '../schemas/gst-gstr2b-compliance.schema';
 import { Gstr3bComplianceRecord } from '../schemas/gst-gstr3b-compliance.schema';
+import { runWithDbLogContext } from '../../../database/db-query-log/db-query-log.context';
 
 export type SchedulerReturnType = GstReturnType | 'ALL';
 
@@ -84,6 +85,19 @@ export class GstReturnAggregationSchedulerService
   }
 
   async run(
+    params: ReturnAggregationSchedulerParams = {},
+  ): Promise<ReturnAggregationSchedulerResult> {
+    return runWithDbLogContext(
+      {
+        source: 'scheduler',
+        customerId: params.customerId ?? null,
+        loanId: params.loanId ?? null,
+      },
+      () => this.executeRun(params),
+    );
+  }
+
+  private async executeRun(
     params: ReturnAggregationSchedulerParams = {},
   ): Promise<ReturnAggregationSchedulerResult> {
     if (!this.gstr2bModel || !this.gstr3bModel) {
@@ -189,7 +203,7 @@ export class GstReturnAggregationSchedulerService
   }
 
   /**
-   * A loan is complete when every expected GSTIN (primary + considered)
+   * A loan is complete when every expected GSTIN (primary + coapplicant)
    * has at least one Mongo document for that return type — any year/month.
    */
   private async evaluateLoanCompletion(
