@@ -129,31 +129,136 @@ For `GET /gst/taxpayer/gstr-2b/:year` and `gstr-3b/:year`:
 
 ---
 
-## 5. End-to-end business flows
+## 5. External Sandbox APIs — what kind of data is fetched
 
-### 5.1 Excel upload → portfolio table
+All external calls go to `GST_API_BASE_URL` (Sandbox). There are two auth styles:
+
+| Style | Auth | Used for |
+|-------|------|----------|
+| **Platform token** | App `api-key` / `api-secret` → access token (`GstAuthService`) | GSTIN verify/search, GSTR track (R1), PAN search |
+| **Taxpayer session** | OTP generate → submit → verify → taxpayer access token | GSTR-2B, GSTR-3B, notices |
+
+### 5.1 Quick map
+
+| Business name | Sandbox path (approx.) | Period | OTP? | What you get (plain language) | Stored in |
+|---------------|------------------------|--------|------|-------------------------------|-----------|
+| GSTIN verify | `POST /gst/compliance/public/gstin/verify` | Once | No | Is GSTIN valid? Legal name, PAN, status, state, registration date | `gst_compliance_data.verifyResponse` |
+| GSTIN search | `POST /gst/compliance/public/gstin/search` | Once | No | Fuller GSTIN / taxpayer profile (addresses, business details, e-invoice flags, etc. as returned by Sandbox) | `gst_compliance_data.searchResponse` |
+| GSTR-1 track (R1) | `POST /gst/compliance/public/gstrs/track?gstr=gstr-1&financial_year=FY YYYY-YY` | Financial year | No | Filing **track** for returns in that FY: which periods were filed / not filed / delayed (not full invoice-level GSTR-1 JSON) | `gst_gstR1_returns_compliance_data` |
+| PAN search | `POST /gst/compliance/public/pan/search?state_code=` | N/A | No | All GSTINs linked to a PAN (optionally one state, or many states in parallel) | `gst_pan_search_data` |
+| GSTR-2B | `GET /gst/compliance/tax-payer/gstrs/gstr-2b/{year}/{month}` | Calendar month | Yes | Auto-drafted **inward** supplies for that month: supplier invoices, ITC eligibility / ineligible / reversed, IGST/CGST/SGST/CESS | `gst_2b_compliance_data` |
+| GSTR-3B | `GET /gst/compliance/tax-payer/gstrs/gstr-3b/{year}/{month}` | Calendar month | Yes | Monthly **summary return**: taxable / exempt turnover, reverse charge, purchases, ITC available / reversed / utilised, cash tax paid | `gst_3b_compliance_data` |
+| Notices list | `GET /gst/compliance/tax-payer/notices` | By date | Yes | List of GST notices for the taxpayer around that date | (response; logged via api_request_logs) |
+| Notice detail | `GET /gst/compliance/tax-payer/notices/{referenceId}` | By id | Yes | Full text / details of one notice | (response; logged) |
+| OTP / session | `/gst/compliance/tax-payer/otp`, `.../otp/verify`, `.../session/refresh` | N/A | — | Auth only (session tokens), not return data | `taxpayer_auth_sessions` |
+
+### 5.2 GSTIN verify + search (public)
+
+**Purpose:** Know whether a GSTIN is valid and get the basic / detailed taxpayer profile.
+
+Typical fields used downstream:
+
+- Legal / trade name, GSTIN status (Active / Cancelled / Suspended, etc.)
+- PAN, state code / state name
+- Registration start date, nature of business (when present)
+- Address / e-invoice related flags from the **search** payload (used for compliance aggregation counts)
+
+**Not** monthly return data — profile only.
+
+### 5.3 GSTR-1 via public track API (called “gstr-track” in this app)
+
+**Purpose:** Filing compliance for GSTR-1 over a **financial year**.
+
+Sandbox is called with `gstr=gstr-1` and `financial_year=FY 2021-22` (example).
+
+What comes back (and what we use):
+
+- Legal name (`lgnm`) when present
+- Per-period filing rows for that FY: return period / month, filed vs not filed, delay vs due date
+- Aggregated into metrics like total return periods, filed / non-filed / delayed / on-time counts
+
+**Important:** This is a **track / filing-status** feed for GSTR-1, **not** the full GSTR-1 invoice export (B2B line items, HSN, etc.).
+
+### 5.4 GSTR-2B (taxpayer, monthly)
+
+**Purpose:** What suppliers reported **against this GSTIN** for a given month (inward supplies / ITC view).
+
+Typical content in the Sandbox payload:
+
+- Supplier GSTINs and invoices for the month
+- Tax breakup: IGST, CGST, SGST, CESS
+- ITC classification: eligible / ineligible / reversed
+
+Used for aggregation metrics such as:
+
+- Supplier count, invoice counts
+- Eligible / ineligible / reversed ITC totals
+- IGST / CGST / SGST / CESS ITC amounts
+
+### 5.5 GSTR-3B (taxpayer, monthly)
+
+**Purpose:** The taxpayer’s **monthly summary return** (liability and ITC utilisation snapshot).
+
+Typical content used from the payload:
+
+- Outward / taxable turnover, exempt turnover, reverse-charge sales
+- Purchase-side values (inter / intra / non-GST where present)
+- ITC available, reversed, ineligible, utilised (and CGST/SGST/IGST splits)
+- Cash tax paid (CGST/SGST/IGST)
+
+### 5.6 PAN search (public)
+
+**Purpose:** Discover GSTINs registered under a PAN (primary or coapplicant).
+
+- Optional `state_code` → one state
+- No state → fan-out across state codes `01..38` (some codes skipped)
+
+Each hit can include GSTIN, legal/trade name, status — used to mark listed vs unlisted GSTINs vs the upload file.
+
+### 5.7 Notices (taxpayer)
+
+**Purpose:** Compliance / department notices for the authenticated taxpayer (list + detail by `referenceId`). Not used for turnovers/ITC aggregation.
+
+### 5.8 How this maps to our Nest routes
+
+| Our API | Sandbox data pulled |
+|---------|---------------------|
+| `POST /gst/verify-and-fetch` | GSTIN verify + search |
+| `POST /gst/verify-and-fetch/gstr-track` (+ `/single`) | GSTR-1 track for a FY |
+| `POST /gst/verify-and-fetch/gstr-2b` | GSTR-2B for one `year`+`month` (all upload GSTINs) |
+| `POST /gst/verify-and-fetch/gstr-3b` | GSTR-3B for one `year`+`month` |
+| `GET /gst/taxpayer/gstr-2b/:year` | GSTR-2B months in that year (cache + missing months) |
+| `GET /gst/taxpayer/gstr-3b/:year` | GSTR-3B months in that year |
+| `POST/GET .../pan/search` | PAN → GSTIN list |
+| `GET /gst/taxpayer/notices` (+ `/:referenceId`) | Notices |
+
+---
+
+## 6. End-to-end business flows
+
+### 6.1 Excel upload → portfolio table
 
 1. `POST /gst/upload` with file + `tableName`
 2. Job type `EXCEL` created
 3. If RabbitMQ on → queue `excel_import`; else process inline
 4. Rows land in Postgres table; poll `GET /gst/status/:jobId`
 
-### 5.2 GSTIN profile fetch (no OTP)
+### 6.2 GSTIN profile fetch (no OTP)
 
 1. `POST /gst/verify-and-fetch`
 2. Job reads all GSTINs from upload table
 3. Public Sandbox verify/search → Mongo `gst_compliance_data`
 4. Updates row status / last pull date
-5. Runs aggregation → primary/secondary Postgres tables
+5. Runs aggregation → primary/coapplicant aggregation Postgres tables
 
-### 5.3 GSTR track / return filing (no OTP, by FY)
+### 6.3 GSTR track / return filing (no OTP, by FY)
 
 1. Batch: `POST /gst/verify-and-fetch/gstr-track` with `financialYear`
 2. Or single sync: `POST /gst/verify-and-fetch/gstr-track/single`
 3. Stores in `gst_gstR1_returns_compliance_data`
 4. Runs track aggregation
 
-### 5.4 GSTR-2B / 3B (OTP)
+### 6.4 GSTR-2B / 3B (OTP)
 
 **Option A — batch for one month (all GSTINs in upload):**
 
@@ -167,13 +272,13 @@ For `GET /gst/taxpayer/gstr-2b/:year` and `gstr-3b/:year`:
 2. `GET /gst/taxpayer/gstr-2b/:year?gstin=&customerId=&associatedLoanId=`
 3. Loops months, caches existing, fetches missing
 
-### 5.5 Scheduler aggregation
+### 6.5 Scheduler aggregation
 
 Background (or manual) check: for each loan, if every expected GSTIN has **at least one** 2B/3B Mongo doc, run customer aggregation into Postgres. This does **not** require a full 12 months of coverage — “any stored return for that GSTIN” is enough for completeness.
 
 ---
 
-## 6. Auth APIs (`/auth`)
+## 7. Auth APIs (`/auth`)
 
 ### `POST /auth/login` — Public
 
@@ -207,7 +312,198 @@ Bootstrap credentials come from `AUTH_BOOTSTRAP_USERNAME` / `AUTH_BOOTSTRAP_PASS
 
 ---
 
-## 7. GST APIs — Dashboard / read
+## 8. GST APIs — Dashboard / read
+
+### `GET /gst/dashboard/revenue-graph`
+
+Dashboard revenue chart from Mongo **GSTR-3B** (`gst_3b_compliance_data`).
+
+| Query | Required | Notes |
+|-------|----------|--------|
+| `loanId` | one of loanId / pan | Mutually exclusive with `pan` |
+| `pan` | one of loanId / pan | Mutually exclusive with `loanId` |
+
+**No** `range` / `bucket` params — response includes **all** series:
+
+| Range | Financial-year window (ref = today) | Buckets |
+|-------|-------------------------------------|---------|
+| `1y` | Current Indian FY (Apr–Mar), e.g. Aug 2026 → Apr 2026–Mar 2027 | `monthly`, `quarterly`, `halfYearly` |
+| `3y` | Current FY + 2 prior FYs | `quarterly`, `halfYearly`, `yearly` |
+| `5y` | Current FY + 4 prior FYs | `quarterly`, `halfYearly`, `yearly` |
+
+**Revenue:** taxable turnover extracted from each 3B doc (same logic as aggregation). Same calendar month across multiple GSTINs is **summed**. Missing periods are **0**.
+
+Each point also includes `percentageChange` vs the **previous point in the same series**:
+
+`((currentRevenue - previousRevenue) / previousRevenue) * 100` (rounded to 2 decimals).  
+`null` for the first point, or when previous revenue is `0` (avoids divide-by-zero).
+
+Each point also includes **`gstWise`**: GSTIN-level taxable turnover for that bar (for click detail), sorted by revenue desc, with `sharePercent` of the bar total. Empty periods have `gstWise: []`.
+
+**Response:** success envelope `flow: "dashboard.revenue-graph"`, `data.ranges["1y"|"3y"|"5y"]` with `financialYears`, `from`, `to`, `totalRevenue`, and bucket objects `{ totalRevenue, points[] }` where each point has `key`, `label`, `from`, `to`, `revenue`, `percentageChange`, `gstWise[]`.
+
+**Example**
+
+```bash
+curl "http://localhost:3000/gst/dashboard/revenue-graph?loanId=LN000002"
+curl "http://localhost:3000/gst/dashboard/revenue-graph?pan=AAACP0252G"
+```
+
+**Sample response (abridged)** — on bar click, use that point’s `gstWise`:
+
+```json
+{
+  "success": true,
+  "flow": "dashboard.revenue-graph",
+  "data": {
+    "loanId": "LN000002",
+    "pan": null,
+    "revenueField": "taxableTurnover",
+    "currency": "INR",
+    "asOf": "2026-08-13",
+    "currentFinancialYear": "FY 2026-27",
+    "ranges": {
+      "1y": {
+        "financialYears": ["FY 2026-27"],
+        "from": "2026-04-01",
+        "to": "2027-03-31",
+        "totalRevenue": 1500000,
+        "monthly": {
+          "totalRevenue": 1500000,
+          "points": [
+            {
+              "key": "2026-04",
+              "label": "Apr 2026",
+              "from": "2026-04-01",
+              "to": "2026-04-30",
+              "revenue": 1000000,
+              "percentageChange": null,
+              "gstWise": [
+                {
+                  "gstin": "09AAACP0252G2ZQ",
+                  "revenue": 600000,
+                  "sharePercent": 60,
+                  "legalName": "Primary Pvt Ltd",
+                  "entityType": "PRIMARY",
+                  "pan": "AAACP0252G"
+                },
+                {
+                  "gstin": "27BBBCP0252G1Z5",
+                  "revenue": 400000,
+                  "sharePercent": 40,
+                  "legalName": "Coapplicant Co",
+                  "entityType": "COAPPLICANT_ENTITY",
+                  "pan": "BBBCP0252G"
+                }
+              ]
+            },
+            {
+              "key": "2026-05",
+              "label": "May 2026",
+              "from": "2026-05-01",
+              "to": "2026-05-31",
+              "revenue": 500000,
+              "percentageChange": -50,
+              "gstWise": [
+                {
+                  "gstin": "09AAACP0252G2ZQ",
+                  "revenue": 500000,
+                  "sharePercent": 100,
+                  "legalName": "Primary Pvt Ltd",
+                  "entityType": "PRIMARY",
+                  "pan": "AAACP0252G"
+                }
+              ]
+            }
+          ]
+        },
+        "quarterly": {
+          "totalRevenue": 1500000,
+          "points": [
+            {
+              "key": "FY2026-27-Q1",
+              "label": "Q1 FY 2026-27",
+              "from": "2026-04-01",
+              "to": "2026-06-30",
+              "revenue": 1500000,
+              "percentageChange": null,
+              "gstWise": [
+                {
+                  "gstin": "09AAACP0252G2ZQ",
+                  "revenue": 1100000,
+                  "sharePercent": 73.33,
+                  "legalName": "Primary Pvt Ltd",
+                  "entityType": "PRIMARY",
+                  "pan": "AAACP0252G"
+                },
+                {
+                  "gstin": "27BBBCP0252G1Z5",
+                  "revenue": 400000,
+                  "sharePercent": 26.67,
+                  "legalName": "Coapplicant Co",
+                  "entityType": "COAPPLICANT_ENTITY",
+                  "pan": "BBBCP0252G"
+                }
+              ]
+            }
+          ]
+        },
+        "halfYearly": { "totalRevenue": 1500000, "points": ["… H1/H2 with gstWise …"] }
+      },
+      "3y": {
+        "financialYears": ["FY 2024-25", "FY 2025-26", "FY 2026-27"],
+        "from": "2024-04-01",
+        "to": "2027-03-31",
+        "totalRevenue": 4500000,
+        "quarterly": { "totalRevenue": 4500000, "points": ["… each Q with gstWise …"] },
+        "halfYearly": { "totalRevenue": 4500000, "points": ["…"] },
+        "yearly": {
+          "totalRevenue": 4500000,
+          "points": [
+            {
+              "key": "FY2026-27",
+              "label": "FY 2026-27",
+              "from": "2026-04-01",
+              "to": "2027-03-31",
+              "revenue": 1500000,
+              "percentageChange": 0,
+              "gstWise": [
+                {
+                  "gstin": "09AAACP0252G2ZQ",
+                  "revenue": 1100000,
+                  "sharePercent": 73.33,
+                  "legalName": "Primary Pvt Ltd",
+                  "entityType": "PRIMARY",
+                  "pan": "AAACP0252G"
+                },
+                {
+                  "gstin": "27BBBCP0252G1Z5",
+                  "revenue": 400000,
+                  "sharePercent": 26.67,
+                  "legalName": "Coapplicant Co",
+                  "entityType": "COAPPLICANT_ENTITY",
+                  "pan": "BBBCP0252G"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "5y": {
+        "financialYears": ["FY 2022-23", "FY 2023-24", "FY 2024-25", "FY 2025-26", "FY 2026-27"],
+        "from": "2022-04-01",
+        "to": "2027-03-31",
+        "totalRevenue": 7500000,
+        "quarterly": { "totalRevenue": 7500000, "points": ["…"] },
+        "halfYearly": { "totalRevenue": 7500000, "points": ["…"] },
+        "yearly": { "totalRevenue": 7500000, "points": ["… each FY with gstWise …"] }
+      }
+    }
+  }
+}
+```
+
+---
 
 ### `GET /gst/data`
 
@@ -403,7 +699,7 @@ Filtered browse of `api_request_logs` (taxpayer / return logging UI).
 
 ---
 
-## 8. GST APIs — Upload & verify jobs
+## 9. GST APIs — Upload & verify jobs
 
 ### `POST /gst/upload` → 202
 
@@ -540,7 +836,7 @@ Test / single-GSTIN track fetch + aggregation.
 
 ---
 
-## 9. Taxpayer OTP & session
+## 10. Taxpayer OTP & session
 
 Prerequisite for GSTR-2B/3B and notices.
 
@@ -601,7 +897,7 @@ OTP TTL: `GST_TAXPAYER_OTP_TTL_MINUTES` (default 10).
 
 ---
 
-## 10. Taxpayer returns (OTP) — yearly month loop
+## 11. Taxpayer returns (OTP) — yearly month loop
 
 ### `GET /gst/taxpayer/gstr-2b/:year`
 
@@ -667,7 +963,7 @@ Envelope `flow: "taxpayer-returns.notice-detail"`.
 
 ---
 
-## 11. Aggregation scheduler
+## 12. Aggregation scheduler
 
 ### Config (env)
 
@@ -739,7 +1035,7 @@ Columns: `customer_id`, `associated_loan_id`, `aggregation_variable` (JSON metri
 
 ---
 
-## 12. Job operation matrix (quick reference)
+## 13. Job operation matrix (quick reference)
 
 | HTTP | Job / sync | Period | OTP | Mongo |
 |------|------------|--------|-----|-------|
@@ -758,7 +1054,7 @@ Tunables: `GST_VERIFY_BATCH_SIZE` (default 50), `GST_VERIFY_CONCURRENCY` (defaul
 
 ---
 
-## 13. Logging: two different tables
+## 14. Logging: two different tables
 
 | | `api_request_logs` | `db_query_logs` |
 |--|--------------------|-----------------|
@@ -770,7 +1066,7 @@ Tunables: `GST_VERIFY_BATCH_SIZE` (default 50), `GST_VERIFY_CONCURRENCY` (defaul
 
 ---
 
-## 14. RabbitMQ vs inline
+## 15. RabbitMQ vs inline
 
 | `ENABLE_RABBITMQ` | Behaviour |
 |-------------------|------------|
@@ -781,7 +1077,7 @@ Requires `RABBITMQ_URL`. If broker is down at startup, app falls back to inline.
 
 ---
 
-## 15. Environment variables (feature-related)
+## 16. Environment variables (feature-related)
 
 | Variable | Role |
 |----------|------|
@@ -802,7 +1098,7 @@ Requires `RABBITMQ_URL`. If broker is down at startup, app falls back to inline.
 
 ---
 
-## 16. Suggested testing order (manual)
+## 17. Suggested testing order (manual)
 
 1. `POST /auth/login` (if JWT on) → save token.  
 2. `GET /gst/data` — confirm upload rows.  
@@ -814,7 +1110,7 @@ Requires `RABBITMQ_URL`. If broker is down at startup, app falls back to inline.
 
 ---
 
-## 17. Source files (for developers)
+## 18. Source files (for developers)
 
 | Area | Path |
 |------|------|

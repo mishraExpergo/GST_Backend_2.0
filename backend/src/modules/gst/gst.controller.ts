@@ -31,6 +31,7 @@ import {
   GstReturnAggregationSchedulerService,
   type SchedulerReturnType,
 } from './services/gst-return-aggregation-scheduler.service';
+import { GstDashboardRevenueGraphService } from './services/gst-dashboard-revenue-graph.service';
 import { FileStorageService } from '../shared/services/file-storage.service';
 import type { ApiRequestStatus } from '../../entities/api-request-log.entity';
 import { Public } from '../../auth/public.decorator';
@@ -49,6 +50,7 @@ export class GstController {
     private readonly apiRequestLogService: ApiRequestLogService,
     private readonly dbQueryLogService: DbQueryLogService,
     private readonly returnAggregationScheduler: GstReturnAggregationSchedulerService,
+    private readonly dashboardRevenueGraphService: GstDashboardRevenueGraphService,
     @Optional() @Inject('EXCEL_SERVICE') private readonly excelClient?: ClientProxy,
   ) {}
 
@@ -298,6 +300,24 @@ export class GstController {
       throw new BadRequestException('"requests" must be an array.');
     }
     return this.gstService.getApiRequestLogsBatch(requests);
+  }
+
+  /**
+   * GET /gst/dashboard/revenue-graph?loanId=... | ?pan=...
+   * Dashboard revenue chart data from Mongo GSTR-3B (taxable turnover).
+   * Returns past 1 / 3 / 5 Indian financial years (Apr–Mar) with all
+   * sub-buckets precomputed (no range/bucket query params).
+   */
+  @Get('dashboard/revenue-graph')
+  async getDashboardRevenueGraph(
+    @Query('loanId') loanId?: string,
+    @Query('pan') pan?: string,
+  ) {
+    const data = await this.dashboardRevenueGraphService.getRevenueGraph({
+      loanId,
+      pan,
+    });
+    return this.successResponse('dashboard.revenue-graph', data);
   }
 
   /**
