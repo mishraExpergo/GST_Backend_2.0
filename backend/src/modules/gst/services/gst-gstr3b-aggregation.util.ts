@@ -18,10 +18,12 @@ export interface PrimaryGstr3bAggregationMetrics {
   PRIMARY_TOTAL_CGST_ITC_UTILISED: number;
   PRIMARY_TOTAL_SGST_ITC_UTILISED: number;
   PRIMARY_TOTAL_IGST_ITC_UTILISED: number;
+  PRIMARY_TOTAL_CESS_ITC_UTILISED: number;
   PRIMARY_TOTAL_CASH_TAX_PAID: number;
   PRIMARY_TOTAL_CASH_CGST_PAID: number;
   PRIMARY_TOTAL_CASH_SGST_PAID: number;
   PRIMARY_TOTAL_CASH_IGST_PAID: number;
+  PRIMARY_TOTAL_CASH_CESS_PAID: number;
 }
 
 export interface SecondaryGstr3bAggregationMetrics {
@@ -42,10 +44,12 @@ export interface SecondaryGstr3bAggregationMetrics {
   CONSIDERED_TOTAL_CGST_ITC_UTILISED: number;
   CONSIDERED_TOTAL_SGST_ITC_UTILISED: number;
   CONSIDERED_TOTAL_IGST_ITC_UTILISED: number;
+  CONSIDERED_TOTAL_CESS_ITC_UTILISED: number;
   CONSIDERED_TOTAL_CASH_TAX_PAID: number;
   CONSIDERED_TOTAL_CASH_CGST_PAID: number;
   CONSIDERED_TOTAL_CASH_SGST_PAID: number;
   CONSIDERED_TOTAL_CASH_IGST_PAID: number;
+  CONSIDERED_TOTAL_CASH_CESS_PAID: number;
 }
 
 export function normalizePan(pan: string | null | undefined): string | null {
@@ -95,10 +99,12 @@ export function computePrimaryGstr3bAggregationMetrics(
     PRIMARY_TOTAL_CGST_ITC_UTILISED: summary.totalCgstItcUtilised,
     PRIMARY_TOTAL_SGST_ITC_UTILISED: summary.totalSgstItcUtilised,
     PRIMARY_TOTAL_IGST_ITC_UTILISED: summary.totalIgstItcUtilised,
+    PRIMARY_TOTAL_CESS_ITC_UTILISED: summary.totalCessItcUtilised,
     PRIMARY_TOTAL_CASH_TAX_PAID: summary.totalCashTaxPaid,
     PRIMARY_TOTAL_CASH_CGST_PAID: summary.totalCashCgstPaid,
     PRIMARY_TOTAL_CASH_SGST_PAID: summary.totalCashSgstPaid,
     PRIMARY_TOTAL_CASH_IGST_PAID: summary.totalCashIgstPaid,
+    PRIMARY_TOTAL_CASH_CESS_PAID: summary.totalCashCessPaid,
   };
 }
 
@@ -124,10 +130,12 @@ export function computeSecondaryGstr3bAggregationMetrics(
     CONSIDERED_TOTAL_CGST_ITC_UTILISED: summary.totalCgstItcUtilised,
     CONSIDERED_TOTAL_SGST_ITC_UTILISED: summary.totalSgstItcUtilised,
     CONSIDERED_TOTAL_IGST_ITC_UTILISED: summary.totalIgstItcUtilised,
+    CONSIDERED_TOTAL_CESS_ITC_UTILISED: summary.totalCessItcUtilised,
     CONSIDERED_TOTAL_CASH_TAX_PAID: summary.totalCashTaxPaid,
     CONSIDERED_TOTAL_CASH_CGST_PAID: summary.totalCashCgstPaid,
     CONSIDERED_TOTAL_CASH_SGST_PAID: summary.totalCashSgstPaid,
     CONSIDERED_TOTAL_CASH_IGST_PAID: summary.totalCashIgstPaid,
+    CONSIDERED_TOTAL_CASH_CESS_PAID: summary.totalCashCessPaid,
   };
 }
 
@@ -161,10 +169,12 @@ export function computeLoanLevelConsideredGstr3bMetrics(
     CONSIDERED_TOTAL_CGST_ITC_UTILISED: 0,
     CONSIDERED_TOTAL_SGST_ITC_UTILISED: 0,
     CONSIDERED_TOTAL_IGST_ITC_UTILISED: 0,
+    CONSIDERED_TOTAL_CESS_ITC_UTILISED: 0,
     CONSIDERED_TOTAL_CASH_TAX_PAID: 0,
     CONSIDERED_TOTAL_CASH_CGST_PAID: 0,
     CONSIDERED_TOTAL_CASH_SGST_PAID: 0,
     CONSIDERED_TOTAL_CASH_IGST_PAID: 0,
+    CONSIDERED_TOTAL_CASH_CESS_PAID: 0,
   };
 
   const pans = Array.from(
@@ -224,6 +234,8 @@ export function computeLoanLevelConsideredGstr3bMetrics(
       entityMetrics.CONSIDERED_TOTAL_SGST_ITC_UTILISED;
     totals.CONSIDERED_TOTAL_IGST_ITC_UTILISED +=
       entityMetrics.CONSIDERED_TOTAL_IGST_ITC_UTILISED;
+    totals.CONSIDERED_TOTAL_CESS_ITC_UTILISED +=
+      entityMetrics.CONSIDERED_TOTAL_CESS_ITC_UTILISED;
     totals.CONSIDERED_TOTAL_CASH_TAX_PAID +=
       entityMetrics.CONSIDERED_TOTAL_CASH_TAX_PAID;
     totals.CONSIDERED_TOTAL_CASH_CGST_PAID +=
@@ -232,6 +244,8 @@ export function computeLoanLevelConsideredGstr3bMetrics(
       entityMetrics.CONSIDERED_TOTAL_CASH_SGST_PAID;
     totals.CONSIDERED_TOTAL_CASH_IGST_PAID +=
       entityMetrics.CONSIDERED_TOTAL_CASH_IGST_PAID;
+    totals.CONSIDERED_TOTAL_CASH_CESS_PAID +=
+      entityMetrics.CONSIDERED_TOTAL_CASH_CESS_PAID;
   }
 
   return totals;
@@ -257,10 +271,12 @@ function computeSummary(
   totalCgstItcUtilised: number;
   totalSgstItcUtilised: number;
   totalIgstItcUtilised: number;
+  totalCessItcUtilised: number;
   totalCashTaxPaid: number;
   totalCashCgstPaid: number;
   totalCashSgstPaid: number;
   totalCashIgstPaid: number;
+  totalCashCessPaid: number;
 } {
   let taxableSuppliesNormalAmount = 0;
   let zeroRatedNilExemptAmount = 0;
@@ -281,10 +297,12 @@ function computeSummary(
   let cgstItcUtilisedAmount = 0;
   let sgstItcUtilisedAmount = 0;
   let igstItcUtilisedAmount = 0;
+  let cessItcUtilisedAmount = 0;
 
   let cgstCashPaidAmount = 0;
   let sgstCashPaidAmount = 0;
   let igstCashPaidAmount = 0;
+  let cessCashPaidAmount = 0;
 
   // Structured extraction fallback for real Sandbox 3B payload shape.
   let structuredTaxableSuppliesNormalAmount = 0;
@@ -303,9 +321,11 @@ function computeSummary(
   let structuredCgstItcUtilisedAmount = 0;
   let structuredSgstItcUtilisedAmount = 0;
   let structuredIgstItcUtilisedAmount = 0;
+  let structuredCessItcUtilisedAmount = 0;
   let structuredCgstCashPaidAmount = 0;
   let structuredSgstCashPaidAmount = 0;
   let structuredIgstCashPaidAmount = 0;
+  let structuredCessCashPaidAmount = 0;
 
   for (const record of records) {
     const payload = (record.gstr3bResponse ?? record) as Record<string, any>;
@@ -426,6 +446,12 @@ function computeSummary(
       'igst_itc_utilised_amount',
       'igstItcUtilisedAmount',
     );
+    cessItcUtilisedAmount += sumForAliases(
+      allFacts,
+      'cess_itc_utilised_amount',
+      'cessItcUtilisedAmount',
+      'csamt_itc_utilised',
+    );
 
     cgstCashPaidAmount +=
       sumForAliases(allFacts, 'cgst_cash_paid_amount', 'cgstCashPaidAmount') +
@@ -436,6 +462,9 @@ function computeSummary(
     igstCashPaidAmount +=
       sumForAliases(allFacts, 'igst_cash_paid_amount', 'igstCashPaidAmount') +
       sumCashByTaxType(allFacts, 'IGST');
+    cessCashPaidAmount +=
+      sumForAliases(allFacts, 'cess_cash_paid_amount', 'cessCashPaidAmount') +
+      sumCashByTaxType(allFacts, 'CESS');
 
     // Structured parsing for payloads like:
     // data.data.sup_details / data.data.itc_elg / data.data.tx_pmt.
@@ -486,12 +515,14 @@ function computeSummary(
     structuredCgstItcUtilisedAmount += pickNumber(pditc, 'c_pdi');
     structuredSgstItcUtilisedAmount += pickNumber(pditc, 's_pdi');
     structuredIgstItcUtilisedAmount += pickNumber(pditc, 'i_pdi');
+    structuredCessItcUtilisedAmount += pickNumber(pditc, 'cs_pdi');
 
     const pdcash = asArrayOfRecords(txPmt.pdcash);
     for (const row of pdcash) {
       structuredCgstCashPaidAmount += pickNumber(row, 'cpd');
       structuredSgstCashPaidAmount += pickNumber(row, 'spd');
       structuredIgstCashPaidAmount += pickNumber(row, 'ipd');
+      structuredCessCashPaidAmount += pickNumber(row, 'cspd', 'cs_pd', 'csamt');
     }
   }
 
@@ -553,18 +584,29 @@ function computeSummary(
     igstItcUtilisedAmount,
     structuredIgstItcUtilisedAmount,
   );
+  cessItcUtilisedAmount = choose(
+    cessItcUtilisedAmount,
+    structuredCessItcUtilisedAmount,
+  );
   cgstCashPaidAmount = choose(cgstCashPaidAmount, structuredCgstCashPaidAmount);
   sgstCashPaidAmount = choose(sgstCashPaidAmount, structuredSgstCashPaidAmount);
   igstCashPaidAmount = choose(igstCashPaidAmount, structuredIgstCashPaidAmount);
+  cessCashPaidAmount = choose(cessCashPaidAmount, structuredCessCashPaidAmount);
 
   const totalPurchaseValue =
     interStatePurchaseAmount + intraStatePurchaseAmount + nonGstPurchaseAmount;
   const totalItcAvailable =
     inputTaxCreditCgstAmount + inputTaxCreditSgstAmount + inputTaxCreditIgstAmount;
   const totalItcUtilised =
-    cgstItcUtilisedAmount + sgstItcUtilisedAmount + igstItcUtilisedAmount;
+    cgstItcUtilisedAmount +
+    sgstItcUtilisedAmount +
+    igstItcUtilisedAmount +
+    cessItcUtilisedAmount;
   const totalCashTaxPaid =
-    cgstCashPaidAmount + sgstCashPaidAmount + igstCashPaidAmount;
+    cgstCashPaidAmount +
+    sgstCashPaidAmount +
+    igstCashPaidAmount +
+    cessCashPaidAmount;
 
   return {
     totalTaxableTurnover: round2(taxableSuppliesAmount),
@@ -584,10 +626,12 @@ function computeSummary(
     totalCgstItcUtilised: round2(cgstItcUtilisedAmount),
     totalSgstItcUtilised: round2(sgstItcUtilisedAmount),
     totalIgstItcUtilised: round2(igstItcUtilisedAmount),
+    totalCessItcUtilised: round2(cessItcUtilisedAmount),
     totalCashTaxPaid: round2(totalCashTaxPaid),
     totalCashCgstPaid: round2(cgstCashPaidAmount),
     totalCashSgstPaid: round2(sgstCashPaidAmount),
     totalCashIgstPaid: round2(igstCashPaidAmount),
+    totalCashCessPaid: round2(cessCashPaidAmount),
   };
 }
 
@@ -662,7 +706,7 @@ function sumForAliases(facts: NumericFact[], ...aliases: string[]): number {
   return total;
 }
 
-function sumCashByTaxType(facts: NumericFact[], taxType: 'CGST' | 'SGST' | 'IGST'): number {
+function sumCashByTaxType(facts: NumericFact[], taxType: 'CGST' | 'SGST' | 'IGST' | 'CESS'): number {
   const cashAmountAliases = new Set(
     ['cash_paid_amount', 'cashPaidAmount', 'cash_paid', 'cashPaid'].map((k) =>
       normalizeKey(k),
@@ -710,12 +754,13 @@ function pickNumber(obj: Record<string, any>, ...keys: string[]): number {
   return 0;
 }
 
-function normalizeTaxType(raw: string | null): 'CGST' | 'SGST' | 'IGST' | null {
+function normalizeTaxType(raw: string | null): 'CGST' | 'SGST' | 'IGST' | 'CESS' | null {
   if (!raw) return null;
   const upper = raw.trim().toUpperCase();
   if (upper === 'CGST') return 'CGST';
   if (upper === 'SGST') return 'SGST';
   if (upper === 'IGST') return 'IGST';
+  if (upper === 'CESS' || upper === 'CESSAMT') return 'CESS';
   return null;
 }
 

@@ -111,10 +111,12 @@ export class GstService {
           },
           {
             $lookup: {
-              from: 'gst_gstR1_returns_compliance_data',
+              from: 'gst_return_filing_track',
               let: { gstin: '$_normalizedGstin' },
               pipeline: [
                 {
+
+                  
                   $addFields: {
                     _normalizedGstin: {
                       $toUpper: {
@@ -195,7 +197,7 @@ export class GstService {
           },
           {
             $lookup: {
-              from: 'gst_gstR1_returns_compliance_data',
+              from: 'gst_return_filing_track',
               let: { gstin: '$_normalizedGstin' },
               pipeline: [
                 {

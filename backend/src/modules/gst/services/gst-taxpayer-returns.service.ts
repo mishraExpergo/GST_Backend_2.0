@@ -11,6 +11,7 @@ import { GstTaxpayerAuthService } from './gst-taxpayer-auth.service';
 import { ApiRequestLogService } from './api-request-log.service';
 import { resolveGstApiCredentials } from './gst-api-credentials.util';
 import { GstReturnPersistenceService } from './gst-return-persistence.service';
+import { GstNoticePersistenceService } from './gst-notice-persistence.service';
 import { getRequiredMonthsForYear } from './gst-return-month-coverage.util';
 
 interface TaxpayerIdentity {
@@ -24,6 +25,8 @@ interface RequestTrackingContext {
   dataSource?: string | null;
   sourceTable?: string | null;
   skipAutoAggregationTrigger?: boolean;
+  /** When true, associatedLoanId and customerId are required (POST fetch). */
+  requireTracking?: boolean;
 }
 
 @Injectable()
@@ -36,6 +39,7 @@ export class GstTaxpayerReturnsService {
     private readonly taxpayerAuthService: GstTaxpayerAuthService,
     private readonly apiRequestLogService: ApiRequestLogService,
     private readonly returnPersistenceService: GstReturnPersistenceService,
+    private readonly noticePersistenceService: GstNoticePersistenceService,
   ) {}
 
   async fetchGstr2bForYear(
@@ -123,6 +127,30 @@ export class GstTaxpayerReturnsService {
       identity,
       noticeDate,
     );
+    const { associatedLoanId, customerId } = this.resolveNoticeTracking(
+      normalizedIdentity,
+      tracking,
+    );
+
+    const cached = await this.tryFindCachedNoticeList(
+      associatedLoanId,
+      customerId,
+      normalizedIdentity.gstin,
+      normalizedDate,
+    );
+    if (cached) {
+      return {
+        message: 'GST notices served from cache.',
+        username: normalizedIdentity.username,
+        gstin: normalizedIdentity.gstin,
+        date: normalizedDate,
+        associatedLoanId,
+        customerId,
+        source: 'cache',
+        data: cached.response,
+      };
+    }
+
     const path = '/gst/compliance/tax-payer/notices';
     const maxRetries = Number(this.config.get('GST_API_MAX_RETRIES', '3'));
     const baseDelay = Number(this.config.get('GST_API_RETRY_BASE_MS', '500'));
@@ -132,11 +160,6 @@ export class GstTaxpayerReturnsService {
 
     let attempt = 0;
     let retriedAfter401 = false;
-    const associatedLoanId =
-      String(tracking.associatedLoanId ?? '').trim() ||
-      `${normalizedIdentity.username}:${normalizedIdentity.gstin}`;
-    const customerId =
-      String(tracking.customerId ?? '').trim() || normalizedIdentity.username;
     const log = await this.apiRequestLogService.createProcessingLog({
       gstrFamily: 'GSTR',
       gstrType: 'GST-NOTICES',
@@ -226,11 +249,26 @@ export class GstTaxpayerReturnsService {
         url,
       });
 
+      await this.tryPersistNoticeList(
+        {
+          associatedLoanId,
+          customerId,
+          gstin: normalizedIdentity.gstin,
+          username: normalizedIdentity.username,
+          dataSource: tracking.dataSource ?? 'sandbox',
+        },
+        normalizedDate,
+        response.data ?? {},
+      );
+
       return {
         message: 'GST notices fetched successfully.',
         username: normalizedIdentity.username,
         gstin: normalizedIdentity.gstin,
         date: normalizedDate,
+        associatedLoanId,
+        customerId,
+        source: 'sandbox',
         data: response.data,
       };
     }
@@ -243,6 +281,29 @@ export class GstTaxpayerReturnsService {
   ): Promise<Record<string, any>> {
     const { normalizedIdentity, normalizedReferenceId } =
       this.validateNoticeReferenceInputs(identity, referenceId);
+    const { associatedLoanId, customerId } = this.resolveNoticeTracking(
+      normalizedIdentity,
+      tracking,
+    );
+
+    const cached = await this.tryFindCachedNoticeDetail(
+      associatedLoanId,
+      normalizedIdentity.gstin,
+      normalizedReferenceId,
+    );
+    if (cached) {
+      return {
+        message: 'GST notice detail served from cache.',
+        username: normalizedIdentity.username,
+        gstin: normalizedIdentity.gstin,
+        referenceId: normalizedReferenceId,
+        associatedLoanId,
+        customerId,
+        source: 'cache',
+        data: cached.response,
+      };
+    }
+
     const path = `/gst/compliance/tax-payer/notices/${encodeURIComponent(
       normalizedReferenceId,
     )}`;
@@ -254,11 +315,6 @@ export class GstTaxpayerReturnsService {
 
     let attempt = 0;
     let retriedAfter401 = false;
-    const associatedLoanId =
-      String(tracking.associatedLoanId ?? '').trim() ||
-      `${normalizedIdentity.username}:${normalizedIdentity.gstin}`;
-    const customerId =
-      String(tracking.customerId ?? '').trim() || normalizedIdentity.username;
     const log = await this.apiRequestLogService.createProcessingLog({
       gstrFamily: 'GSTR',
       gstrType: 'GST-NOTICES',
@@ -351,13 +407,209 @@ export class GstTaxpayerReturnsService {
         url,
       });
 
+      await this.tryPersistNoticeDetail(
+        {
+          associatedLoanId,
+          customerId,
+          gstin: normalizedIdentity.gstin,
+          username: normalizedIdentity.username,
+          dataSource: tracking.dataSource ?? 'sandbox',
+        },
+        normalizedReferenceId,
+        response.data ?? {},
+      );
+
       return {
         message: 'GST notice detail fetched successfully.',
         username: normalizedIdentity.username,
         gstin: normalizedIdentity.gstin,
         referenceId: normalizedReferenceId,
+        associatedLoanId,
+        customerId,
+        source: 'sandbox',
         data: response.data,
       };
+    }
+  }
+
+  async getStoredNotices(params: {
+    associatedLoanId: string;
+    customerId: string;
+    gstin: string;
+    noticeDate?: string;
+  }): Promise<Record<string, any>> {
+    const { associatedLoanId, customerId } =
+      this.noticePersistenceService.validateTrackingContext(params);
+    const gstin = String(params.gstin ?? '')
+      .trim()
+      .toUpperCase();
+    if (!gstin) {
+      throw new BadRequestException('"gstin" is required.');
+    }
+
+    const rows = await this.noticePersistenceService.getStoredLists({
+      associatedLoanId,
+      customerId,
+      gstin,
+      noticeDate: params.noticeDate,
+    });
+
+    return {
+      message: 'Stored GST notices retrieved successfully.',
+      associatedLoanId,
+      customerId,
+      gstin,
+      date: params.noticeDate ?? null,
+      count: rows.length,
+      data: rows,
+    };
+  }
+
+  async getStoredNoticeDetail(params: {
+    associatedLoanId: string;
+    gstin: string;
+    referenceId: string;
+    customerId?: string;
+  }): Promise<Record<string, any>> {
+    const associatedLoanId = String(params.associatedLoanId ?? '').trim();
+    const gstin = String(params.gstin ?? '')
+      .trim()
+      .toUpperCase();
+    const referenceId = String(params.referenceId ?? '').trim();
+
+    if (!associatedLoanId) {
+      throw new BadRequestException('"associatedLoanId" is required.');
+    }
+    if (!gstin) {
+      throw new BadRequestException('"gstin" is required.');
+    }
+    if (!referenceId) {
+      throw new BadRequestException('"referenceId" is required.');
+    }
+
+    const row = await this.noticePersistenceService.getStoredDetail({
+      associatedLoanId,
+      gstin,
+      referenceId,
+    });
+
+    if (!row) {
+      throw new BadRequestException(
+        `No stored notice detail found for gstin=${gstin}, referenceId=${referenceId}.`,
+      );
+    }
+
+    return {
+      message: 'Stored GST notice detail retrieved successfully.',
+      associatedLoanId,
+      customerId: row.customerId,
+      gstin,
+      referenceId,
+      data: row,
+    };
+  }
+
+  private resolveNoticeTracking(
+    identity: TaxpayerIdentity,
+    tracking: RequestTrackingContext,
+  ): { associatedLoanId: string; customerId: string } {
+    if (tracking.requireTracking) {
+      return this.noticePersistenceService.validateTrackingContext(tracking);
+    }
+
+    const associatedLoanId =
+      String(tracking.associatedLoanId ?? '').trim() ||
+      `${identity.username}:${identity.gstin}`;
+    const customerId =
+      String(tracking.customerId ?? '').trim() ||
+      String(identity.username ?? '').trim() ||
+      identity.gstin;
+    return { associatedLoanId, customerId };
+  }
+
+  private async tryFindCachedNoticeList(
+    associatedLoanId: string,
+    customerId: string,
+    gstin: string,
+    noticeDate: string,
+  ) {
+    try {
+      this.noticePersistenceService.assertMongoEnabled();
+      return await this.noticePersistenceService.findList(
+        associatedLoanId,
+        customerId,
+        gstin,
+        noticeDate,
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  private async tryFindCachedNoticeDetail(
+    associatedLoanId: string,
+    gstin: string,
+    referenceId: string,
+  ) {
+    try {
+      this.noticePersistenceService.assertMongoEnabled();
+      return await this.noticePersistenceService.findDetail(
+        associatedLoanId,
+        gstin,
+        referenceId,
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  private async tryPersistNoticeList(
+    context: {
+      associatedLoanId: string;
+      customerId: string;
+      gstin: string;
+      username?: string;
+      dataSource?: string | null;
+    },
+    noticeDate: string,
+    response: Record<string, any>,
+  ): Promise<void> {
+    try {
+      this.noticePersistenceService.assertMongoEnabled();
+      await this.noticePersistenceService.upsertList(
+        context,
+        noticeDate,
+        response,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Failed to persist notice list for ${context.gstin}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  private async tryPersistNoticeDetail(
+    context: {
+      associatedLoanId: string;
+      customerId: string;
+      gstin: string;
+      username?: string;
+      dataSource?: string | null;
+    },
+    referenceId: string,
+    response: Record<string, any>,
+  ): Promise<void> {
+    try {
+      this.noticePersistenceService.assertMongoEnabled();
+      await this.noticePersistenceService.upsertDetail(
+        context,
+        referenceId,
+        response,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Failed to persist notice detail for ${context.gstin}/${referenceId}: ${(err as Error).message}`,
+      );
     }
   }
 

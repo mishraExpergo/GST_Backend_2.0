@@ -28,6 +28,7 @@ import {
   GstReturnAggregationSchedulerService,
   type SchedulerReturnType,
 } from './services/gst-return-aggregation-scheduler.service';
+import { GstTaxPaymentChartService } from './services/gst-tax-payment-chart.service';
 import { FileStorageService } from '../shared/services/file-storage.service';
 import type { ApiRequestStatus } from '../../entities/api-request-log.entity';
 import { Public } from '../../auth/public.decorator';
@@ -43,6 +44,7 @@ export class GstController {
     private readonly gstTaxpayerReturnsService: GstTaxpayerReturnsService,
     private readonly apiRequestLogService: ApiRequestLogService,
     private readonly returnAggregationScheduler: GstReturnAggregationSchedulerService,
+    private readonly taxPaymentChartService: GstTaxPaymentChartService,
     @Optional() @Inject('EXCEL_SERVICE') private readonly excelClient?: ClientProxy,
   ) {}
 
@@ -267,6 +269,50 @@ export class GstController {
     };
   }
 
+  /**
+   * GET /gst/charts/tax-payment
+   * Tax Payment chart (GSTR-3B): stacked ITC Utilised + Cash Tax Paid, dotted Total.
+   *
+   * Response data:
+   *   - series: period points for bars/line and hover tooltip
+   *   - incomplete + missing: Fetch Data | Continue Anyway popup
+   *   - drilldown: GSTIN rows when financialYear / year+month is sent
+   *   - fetch: job ids when fetchMissing=true
+   *
+   * Required: entityType=PAN|LOAN, entityId, range=1y|3y|5y
+   * Optional: granularity, financialYear, half, quarter, year, month, fetchMissing, username, tableName
+   */
+  @Get('charts/tax-payment')
+  async getTaxPaymentChart(
+    @Query('entityType') entityType?: string,
+    @Query('entityId') entityId?: string,
+    @Query('range') range?: string,
+    @Query('granularity') granularity?: string,
+    @Query('tableName') tableName?: string,
+    @Query('financialYear') financialYear?: string,
+    @Query('half') half?: string,
+    @Query('quarter') quarter?: string,
+    @Query('year') year?: string,
+    @Query('month') month?: string,
+    @Query('fetchMissing') fetchMissing?: string,
+    @Query('username') username?: string,
+  ) {
+    const data = await this.taxPaymentChartService.getChart({
+      entityType: entityType ?? '',
+      entityId: entityId ?? '',
+      range: range ?? '',
+      granularity,
+      tableName,
+      financialYear,
+      half,
+      quarter,
+      year,
+      month,
+      fetchMissing,
+      username,
+    });
+    return this.successResponse('charts.tax-payment', data);
+  }
 
   /**
    * POST /gst/upload
@@ -598,8 +644,103 @@ export class GstController {
   }
 
   /**
+   * POST /gst/taxpayer/notices/fetch
+   * Cache-first list fetch. Body requires username, gstin, date,
+   * associatedLoanId, customerId. Optional: dataSource.
+   */
+  @Post('taxpayer/notices/fetch')
+  async fetchAndStoreTaxpayerNotices(
+    @Body('username') username: string,
+    @Body('gstin') gstin: string,
+    @Body('date') date: string,
+    @Body('associatedLoanId') associatedLoanId: string,
+    @Body('customerId') customerId: string,
+    @Body('dataSource') dataSource?: string,
+  ) {
+    const data = await this.gstTaxpayerReturnsService.fetchNotices(
+      { username, gstin },
+      date,
+      {
+        associatedLoanId,
+        customerId,
+        dataSource,
+        requireTracking: true,
+      },
+    );
+    return this.successResponse('taxpayer-returns.notices-fetch', data);
+  }
+
+  /**
+   * POST /gst/taxpayer/notices/fetch/:referenceId
+   * Cache-first detail fetch. Body requires username, gstin,
+   * associatedLoanId, customerId. Optional: dataSource.
+   */
+  @Post('taxpayer/notices/fetch/:referenceId')
+  async fetchAndStoreTaxpayerNoticeByReferenceId(
+    @Param('referenceId') referenceId: string,
+    @Body('username') username: string,
+    @Body('gstin') gstin: string,
+    @Body('associatedLoanId') associatedLoanId: string,
+    @Body('customerId') customerId: string,
+    @Body('dataSource') dataSource?: string,
+  ) {
+    const data = await this.gstTaxpayerReturnsService.fetchNoticeByReferenceId(
+      { username, gstin },
+      referenceId,
+      {
+        associatedLoanId,
+        customerId,
+        dataSource,
+        requireTracking: true,
+      },
+    );
+    return this.successResponse('taxpayer-returns.notice-detail-fetch', data);
+  }
+
+  /**
+   * GET /gst/taxpayer/notices/stored
+   * Reads Mongo-stored notice lists. Required: associatedLoanId, customerId, gstin.
+   * Optional exact filter: date=DD/MM/YYYY.
+   */
+  @Get('taxpayer/notices/stored')
+  async getStoredTaxpayerNotices(
+    @Query('associatedLoanId') associatedLoanId: string,
+    @Query('customerId') customerId: string,
+    @Query('gstin') gstin: string,
+    @Query('date') date?: string,
+  ) {
+    const data = await this.gstTaxpayerReturnsService.getStoredNotices({
+      associatedLoanId,
+      customerId,
+      gstin,
+      noticeDate: date,
+    });
+    return this.successResponse('taxpayer-returns.notices-stored', data);
+  }
+
+  /**
+   * GET /gst/taxpayer/notices/stored/:referenceId
+   * Reads one Mongo-stored notice detail. Required: associatedLoanId, gstin.
+   */
+  @Get('taxpayer/notices/stored/:referenceId')
+  async getStoredTaxpayerNoticeByReferenceId(
+    @Param('referenceId') referenceId: string,
+    @Query('associatedLoanId') associatedLoanId: string,
+    @Query('gstin') gstin: string,
+    @Query('customerId') customerId?: string,
+  ) {
+    const data = await this.gstTaxpayerReturnsService.getStoredNoticeDetail({
+      associatedLoanId,
+      gstin,
+      referenceId,
+      customerId,
+    });
+    return this.successResponse('taxpayer-returns.notice-detail-stored', data);
+  }
+
+  /**
    * GET /gst/taxpayer/notices?username=...&gstin=...&date=DD/MM/YYYY
-   * Date must be within the last 60 days.
+   * Date must be within the last 60 days. Cache-first when Mongo has a match.
    */
   @Get('taxpayer/notices')
   async fetchTaxpayerNotices(
@@ -620,6 +761,7 @@ export class GstController {
 
   /**
    * GET /gst/taxpayer/notices/:referenceId?username=...&gstin=...
+   * Cache-first when Mongo has a match.
    */
   @Get('taxpayer/notices/:referenceId')
   async fetchTaxpayerNoticeByReferenceId(

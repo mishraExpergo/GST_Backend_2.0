@@ -25,7 +25,9 @@ import { GstTaxpayerReturnsService } from './services/gst-taxpayer-returns.servi
 import { ApiRequestLogService } from './services/api-request-log.service';
 import { GstAggregationHistoryService } from './services/gst-aggregation-history.service';
 import { GstReturnPersistenceService } from './services/gst-return-persistence.service';
+import { GstNoticePersistenceService } from './services/gst-notice-persistence.service';
 import { GstReturnAggregationSchedulerService } from './services/gst-return-aggregation-scheduler.service';
+import { GstTaxPaymentChartService } from './services/gst-tax-payment-chart.service';
 import {
   GstComplianceRecord,
   GstComplianceSchema,
@@ -46,6 +48,10 @@ import {
   GstPanSearchRecord,
   GstPanSearchSchema,
 } from './schemas/gst-pan-search.schema';
+import {
+  GstNoticeRecord,
+  GstNoticeSchema,
+} from './schemas/gst-notice.schema';
 
 const enableRabbitMQ = process.env.ENABLE_RABBITMQ === 'true';
 const enableMongo = process.env.ENABLE_MONGO === 'true';
@@ -73,6 +79,7 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
               schema: Gstr1ReturnsComplianceSchema,
             },
             { name: GstPanSearchRecord.name, schema: GstPanSearchSchema },
+            { name: GstNoticeRecord.name, schema: GstNoticeSchema },
           ]),
         ]
       : []),
@@ -114,10 +121,12 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
     GstAggregationService,
     GstAggregationHistoryService,
     GstReturnPersistenceService,
+    GstNoticePersistenceService,
     GstReturnAggregationSchedulerService,
     GstTaxpayerAuthService,
     GstTaxpayerReturnsService,
     ApiRequestLogService,
+    GstTaxPaymentChartService,
   ],
   exports: [GstService],
 })
