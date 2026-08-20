@@ -27,6 +27,7 @@ import { GstAggregationHistoryService } from './services/gst-aggregation-history
 import { GstReturnPersistenceService } from './services/gst-return-persistence.service';
 import { GstReturnAggregationSchedulerService } from './services/gst-return-aggregation-scheduler.service';
 import { GstDashboardRevenueGraphService } from './services/gst-dashboard-revenue-graph.service';
+import { GstDashboardGvaTrendService } from './services/gst-dashboard-gva-trend.service';
 import {
   GstComplianceRecord,
   GstComplianceSchema,
@@ -120,6 +121,7 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
     GstTaxpayerReturnsService,
     ApiRequestLogService,
     GstDashboardRevenueGraphService,
+    GstDashboardGvaTrendService,
   ],
   exports: [GstService],
 })

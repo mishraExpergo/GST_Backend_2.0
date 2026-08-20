@@ -505,6 +505,42 @@ curl "http://localhost:3000/gst/dashboard/revenue-graph?pan=AAACP0252G"
 
 ---
 
+### `GET /gst/dashboard/gva-trend`
+
+Purchase / Revenue / GVA trend from Mongo **GSTR-2B** (purchases) + **GSTR-3B** (revenue).
+
+| Query | Required | Notes |
+|-------|----------|--------|
+| `loanId` | one of loanId / pan | Mutually exclusive with `pan` |
+| `pan` | one of loanId / pan | Mutually exclusive with `loanId` |
+
+**No** `range` / `bucket` params — all series in one response:
+
+| Range | Buckets |
+|-------|---------|
+| `1y` | `monthly`, `quarterly`, `halfYearly` |
+| `3y` / `5y` | `quarterly`, `halfYearly`, `yearly` |
+
+| Field | Source / formula |
+|-------|------------------|
+| `purchases` | GSTR-2B invoice taxable value (`txval`) for all borrower GSTINs; credit notes subtract |
+| `revenue` | GSTR-3B taxable turnover (same as revenue-graph) |
+| `gva` | `revenue − purchases` |
+| `gvaMargin` | `(gva / revenue) × 100`, `null` if revenue is 0 |
+| `*PercentageChange` | vs previous bar; `null` if first or previous is 0 |
+| `gvaMarginChangePp` | `currentMargin − previousMargin` (percentage points) |
+
+`gstWise` is by **borrower GSTIN**, sorted by GVA desc. Amounts are **INR**.
+
+**Example**
+
+```bash
+curl "http://localhost:3000/gst/dashboard/gva-trend?loanId=LN000002"
+curl "http://localhost:3000/gst/dashboard/gva-trend?pan=AAACP0252G"
+```
+
+---
+
 ### `GET /gst/data`
 
 Portfolio / uploaded rows for the frontend table.

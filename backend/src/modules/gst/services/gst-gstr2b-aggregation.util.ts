@@ -145,6 +145,138 @@ export function computePrimaryGstr2bAggregationMetrics(
 }
 
 /**
+ * Total inward purchase taxable value (txval) from one or more GSTR-2B docs.
+ * Prefer invoice-level `txval` / `taxable_value` (not tax amounts / ITC).
+ */
+export function computeGstr2bPurchaseTaxableValue(
+  records: Array<Gstr2bComplianceRecord | Record<string, any>>,
+): number {
+  let total = 0;
+  for (const record of records) {
+    const payload = (record.gstr2bResponse ?? record) as Record<string, any>;
+    const structured = sumStructuredGstr2bTaxableValue(payload);
+    if (structured > 0) {
+      total += structured;
+    } else {
+      total += sumInvoiceLevelTaxableValue(payload);
+    }
+  }
+  return round2(total);
+}
+
+function sumStructuredGstr2bTaxableValue(payload: Record<string, any>): number {
+  const roots = [
+    payload?.data?.docdata,
+    payload?.docdata,
+    payload?.data?.data?.docdata,
+    payload?.data,
+    payload,
+  ].filter(Boolean);
+
+  let total = 0;
+  for (const root of roots) {
+    if (!root || typeof root !== 'object') continue;
+    const r = root as Record<string, any>;
+    // B2B invoices
+    for (const supplier of asArray(r.b2b)) {
+      total += sumTxvalOnList(asArray(supplier?.inv ?? supplier?.invoices));
+    }
+    // Credit/debit notes
+    for (const supplier of asArray(r.cdnr ?? r.cdn)) {
+      for (const note of asArray(supplier?.nt ?? supplier?.inv)) {
+        const txval = pickTaxableValue(note);
+        const kind = String(
+          note?.ntty ?? note?.note_type ?? note?.type ?? '',
+        )
+          .trim()
+          .toUpperCase();
+        if (kind === 'C' || kind === 'CR' || kind.includes('CREDIT')) {
+          total -= txval;
+        } else {
+          total += txval;
+        }
+      }
+    }
+    // B2BA amendments
+    for (const supplier of asArray(r.b2ba)) {
+      total += sumTxvalOnList(asArray(supplier?.inv));
+    }
+    // ISD / IMPG / IMPGSEZ if present with txval
+    for (const key of ['isd', 'impg', 'impgsez', 'eco']) {
+      for (const row of asArray(r[key])) {
+        total += pickTaxableValue(row);
+        total += sumTxvalOnList(asArray(row?.inv ?? row?.nt));
+      }
+    }
+  }
+  return round2(total);
+}
+
+function sumInvoiceLevelTaxableValue(payload: unknown): number {
+  let total = 0;
+  const visit = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item);
+      return;
+    }
+    if (!node || typeof node !== 'object') return;
+    const obj = node as Record<string, any>;
+    const hasInvoiceId = Boolean(
+      pickString(
+        obj,
+        'invoiceNumber',
+        'invoice_number',
+        'invoice_no',
+        'inum',
+        'inv_num',
+        'ntnum',
+        'note_number',
+      ),
+    );
+    const txval = pickTaxableValue(obj);
+    if (hasInvoiceId && txval) {
+      total += txval;
+    }
+    for (const value of Object.values(obj)) {
+      if (value && typeof value === 'object') visit(value);
+    }
+  };
+  visit(payload);
+  return round2(total);
+}
+
+function sumTxvalOnList(rows: Array<Record<string, any>>): number {
+  return rows.reduce((sum, row) => sum + pickTaxableValue(row), 0);
+}
+
+function pickTaxableValue(obj: Record<string, any> | null | undefined): number {
+  if (!obj || typeof obj !== 'object') return 0;
+  return pickNumber(
+    obj,
+    'txval',
+    'taxable_value',
+    'taxableValue',
+    'taxable_val',
+    'taxval',
+    'ttl_txval',
+    'total_taxable_value',
+    'totalTaxableValue',
+  );
+}
+
+function asArray(value: unknown): Array<Record<string, any>> {
+  if (Array.isArray(value)) {
+    return value.filter((v) => v && typeof v === 'object') as Array<
+      Record<string, any>
+    >;
+  }
+  if (value && typeof value === 'object') {
+    return [value as Record<string, any>];
+  }
+  return [];
+}
+
+/**
  * Per coapplicant-entity PAN metrics from that PAN's GSTR-2B docs.
  */
 export function computeCoapplicantEntityPanSupplierMetrics(

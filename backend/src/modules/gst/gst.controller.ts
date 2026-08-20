@@ -32,6 +32,7 @@ import {
   type SchedulerReturnType,
 } from './services/gst-return-aggregation-scheduler.service';
 import { GstDashboardRevenueGraphService } from './services/gst-dashboard-revenue-graph.service';
+import { GstDashboardGvaTrendService } from './services/gst-dashboard-gva-trend.service';
 import { FileStorageService } from '../shared/services/file-storage.service';
 import type { ApiRequestStatus } from '../../entities/api-request-log.entity';
 import { Public } from '../../auth/public.decorator';
@@ -51,6 +52,7 @@ export class GstController {
     private readonly dbQueryLogService: DbQueryLogService,
     private readonly returnAggregationScheduler: GstReturnAggregationSchedulerService,
     private readonly dashboardRevenueGraphService: GstDashboardRevenueGraphService,
+    private readonly dashboardGvaTrendService: GstDashboardGvaTrendService,
     @Optional() @Inject('EXCEL_SERVICE') private readonly excelClient?: ClientProxy,
   ) {}
 
@@ -318,6 +320,23 @@ export class GstController {
       pan,
     });
     return this.successResponse('dashboard.revenue-graph', data);
+  }
+
+  /**
+   * GET /gst/dashboard/gva-trend?loanId=... | ?pan=...
+   * Purchase (GSTR-2B) + Revenue (GSTR-3B) + GVA trend for dashboard chart.
+   * Returns past 1 / 3 / 5 Indian FYs with all sub-buckets precomputed.
+   */
+  @Get('dashboard/gva-trend')
+  async getDashboardGvaTrend(
+    @Query('loanId') loanId?: string,
+    @Query('pan') pan?: string,
+  ) {
+    const data = await this.dashboardGvaTrendService.getGvaTrend({
+      loanId,
+      pan,
+    });
+    return this.successResponse('dashboard.gva-trend', data);
   }
 
   /**
