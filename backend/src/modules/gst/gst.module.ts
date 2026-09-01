@@ -28,6 +28,9 @@ import { GstReturnPersistenceService } from './services/gst-return-persistence.s
 import { GstReturnAggregationSchedulerService } from './services/gst-return-aggregation-scheduler.service';
 import { GstDashboardRevenueGraphService } from './services/gst-dashboard-revenue-graph.service';
 import { GstDashboardGvaTrendService } from './services/gst-dashboard-gva-trend.service';
+import { GstDashboardFilingBehaviourService } from './services/gst-dashboard-filing-behaviour.service';
+import { GstDashboardDelayedFilingBehaviourService } from './services/gst-dashboard-delayed-filing-behaviour.service';
+import { GstDashboardNonFilingBehaviourService } from './services/gst-dashboard-non-filing-behaviour.service';
 import {
   GstComplianceRecord,
   GstComplianceSchema,
@@ -122,6 +125,9 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
     ApiRequestLogService,
     GstDashboardRevenueGraphService,
     GstDashboardGvaTrendService,
+    GstDashboardFilingBehaviourService,
+    GstDashboardDelayedFilingBehaviourService,
+    GstDashboardNonFilingBehaviourService,
   ],
   exports: [GstService],
 })

@@ -541,6 +541,99 @@ curl "http://localhost:3000/gst/dashboard/gva-trend?pan=AAACP0252G"
 
 ---
 
+### `GET /gst/dashboard/filing-behaviour`
+
+On-time **GSTR-1** filing behaviour from Mongo track collection `gst_gstR1_returns_compliance_data`.
+
+| Query | Required | Notes |
+|-------|----------|--------|
+| `loanId` | one of loanId / pan | Mutually exclusive with `pan` |
+| `pan` | one of loanId / pan | Mutually exclusive with `loanId` |
+
+**No** `range` / `bucket` params — all series in one response:
+
+| Range | Buckets |
+|-------|---------|
+| `1y` | `monthly`, `quarterly`, `halfYearly` |
+| `3y` / `5y` | `quarterly`, `halfYearly`, `yearly` |
+
+| Field | Formula |
+|-------|---------|
+| `onTimeFilingPercent` | `(onTimeCount ÷ applicableCount) × 100`; **`null` if applicableCount is 0** (never invent 0% for missing data) |
+| `applicableCount` | GSTR-1 return periods present in track for that bucket (summed across borrower GSTINs) |
+| `onTimeCount` | Filed on/before due date (`filingDelayDays === 0`) |
+| `delayedCount` | Filed after due date |
+| `notFiledCount` | Track status not filed |
+| `percentageChange` | `((current% − previous%) / previous%) × 100` |
+| `yoyChangePp` | (yearly only) `currentFy% − previousFy%` |
+
+`gstWise` is by **borrower GSTIN**. `dataCompleteness.missingGstins` lists GSTINs (from compliance + track) missing track coverage for one or more FYs — FE can drive Fetch Data / Continue Anyway.
+
+**Example**
+
+```bash
+curl "http://localhost:3000/gst/dashboard/filing-behaviour?loanId=LN000002"
+curl "http://localhost:3000/gst/dashboard/filing-behaviour?pan=AAACP0252G"
+```
+
+---
+
+### `GET /gst/dashboard/delayed-filing-behaviour`
+
+Delayed **GSTR-1** filing behaviour from the same Mongo track source as on-time filing.
+
+| Query | Required | Notes |
+|-------|----------|--------|
+| `loanId` | one of loanId / pan | Mutually exclusive with `pan` |
+| `pan` | one of loanId / pan | Mutually exclusive with `loanId` |
+
+Same ranges/buckets as on-time. Primary metric:
+
+| Field | Formula |
+|-------|---------|
+| `delayedFilingPercent` | `(delayedCount ÷ applicableCount) × 100`; **`null` if applicableCount is 0** |
+| `percentageChange` | `((currentDelayed% − previousDelayed%) / previousDelayed%) × 100` |
+| `yoyChangePp` | (yearly) `currentDelayed% − previousDelayed%` |
+| `topDefaultingGstins` | Top borrower GSTINs by delayed % (period + range level) |
+
+Higher delayed % = worse. Missing track → `null`, not `0`. FE owns ↑/↓/improving labels.
+
+**Example**
+
+```bash
+curl "http://localhost:3000/gst/dashboard/delayed-filing-behaviour?loanId=LN000002"
+curl "http://localhost:3000/gst/dashboard/delayed-filing-behaviour?pan=AAACP0252G"
+```
+
+---
+
+### `GET /gst/dashboard/non-filing-behaviour`
+
+Non-filed **GSTR-1** % from the same Mongo track source. Only returns whose **due date has passed** are applicable. Missing track data is **never** treated as non-filing.
+
+| Query | Required | Notes |
+|-------|----------|--------|
+| `loanId` | one of loanId / pan | Mutually exclusive with `pan` |
+| `pan` | one of loanId / pan | Mutually exclusive with `loanId` |
+
+Same ranges/buckets as on-time / delayed. Primary metric:
+
+| Field | Formula |
+|-------|---------|
+| `nonFilingPercent` | `(notFiledCount ÷ applicableCount) × 100`; **`null` if applicableCount is 0** |
+| `percentageChange` | vs previous bar’s non-filing % |
+| `yoyChangePp` | (yearly) current − previous (pp) |
+| `topDefaultingGstins` | Top GSTINs by non-filing % (period + range) |
+
+**Example**
+
+```bash
+curl "http://localhost:3000/gst/dashboard/non-filing-behaviour?loanId=LN000002"
+curl "http://localhost:3000/gst/dashboard/non-filing-behaviour?pan=AAACP0252G"
+```
+
+---
+
 ### `GET /gst/data`
 
 Portfolio / uploaded rows for the frontend table.

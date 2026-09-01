@@ -33,6 +33,9 @@ import {
 } from './services/gst-return-aggregation-scheduler.service';
 import { GstDashboardRevenueGraphService } from './services/gst-dashboard-revenue-graph.service';
 import { GstDashboardGvaTrendService } from './services/gst-dashboard-gva-trend.service';
+import { GstDashboardFilingBehaviourService } from './services/gst-dashboard-filing-behaviour.service';
+import { GstDashboardDelayedFilingBehaviourService } from './services/gst-dashboard-delayed-filing-behaviour.service';
+import { GstDashboardNonFilingBehaviourService } from './services/gst-dashboard-non-filing-behaviour.service';
 import { FileStorageService } from '../shared/services/file-storage.service';
 import type { ApiRequestStatus } from '../../entities/api-request-log.entity';
 import { Public } from '../../auth/public.decorator';
@@ -53,6 +56,9 @@ export class GstController {
     private readonly returnAggregationScheduler: GstReturnAggregationSchedulerService,
     private readonly dashboardRevenueGraphService: GstDashboardRevenueGraphService,
     private readonly dashboardGvaTrendService: GstDashboardGvaTrendService,
+    private readonly dashboardFilingBehaviourService: GstDashboardFilingBehaviourService,
+    private readonly dashboardDelayedFilingBehaviourService: GstDashboardDelayedFilingBehaviourService,
+    private readonly dashboardNonFilingBehaviourService: GstDashboardNonFilingBehaviourService,
     @Optional() @Inject('EXCEL_SERVICE') private readonly excelClient?: ClientProxy,
   ) {}
 
@@ -340,6 +346,60 @@ export class GstController {
   }
 
   /**
+   * GET /gst/dashboard/filing-behaviour?loanId=... | ?pan=...
+   * On-time GSTR-1 filing % from Mongo track data (all borrower GSTINs).
+   * Returns past 1 / 3 / 5 Indian FYs with all sub-buckets precomputed.
+   * Missing track data → null percentages (not 0) + missingGstins list.
+   */
+  @Get('dashboard/filing-behaviour')
+  async getDashboardFilingBehaviour(
+    @Query('loanId') loanId?: string,
+    @Query('pan') pan?: string,
+  ) {
+    const data = await this.dashboardFilingBehaviourService.getFilingBehaviour({
+      loanId,
+      pan,
+    });
+    return this.successResponse('dashboard.filing-behaviour', data);
+  }
+
+  /**
+   * GET /gst/dashboard/delayed-filing-behaviour?loanId=... | ?pan=...
+   * Delayed GSTR-1 filing % from Mongo track data (all borrower GSTINs).
+   * Same ranges/buckets as on-time filing; missing → null (not 0).
+   * Includes topDefaultingGstins for interpretation lists.
+   */
+  @Get('dashboard/delayed-filing-behaviour')
+  async getDashboardDelayedFilingBehaviour(
+    @Query('loanId') loanId?: string,
+    @Query('pan') pan?: string,
+  ) {
+    const data =
+      await this.dashboardDelayedFilingBehaviourService.getDelayedFilingBehaviour(
+        { loanId, pan },
+      );
+    return this.successResponse('dashboard.delayed-filing-behaviour', data);
+  }
+
+  /**
+   * GET /gst/dashboard/non-filing-behaviour?loanId=... | ?pan=...
+   * Non-filed GSTR-1 % from Mongo track (due date passed + no filing).
+   * Missing track data is never treated as non-filing (null + missingGstins).
+   */
+  @Get('dashboard/non-filing-behaviour')
+  async getDashboardNonFilingBehaviour(
+    @Query('loanId') loanId?: string,
+    @Query('pan') pan?: string,
+  ) {
+    const data =
+      await this.dashboardNonFilingBehaviourService.getNonFilingBehaviour({
+        loanId,
+        pan,
+      });
+    return this.successResponse('dashboard.non-filing-behaviour', data);
+  }
+
+  /**
    * GET /gst/aggregation?loanId=...&type=primary|coapplicant
    * Returns flattened { outputField, output } rows for the Aggregation Table
    * modal. Coapplicant metrics are still stored in secondary_gst_aggregation
@@ -370,7 +430,6 @@ export class GstController {
       debug: result.debug,
     };
   }
-
 
   /**
    * POST /gst/upload
