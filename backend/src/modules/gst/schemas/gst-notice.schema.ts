@@ -8,7 +8,7 @@ export type GstNoticeRecordType = 'LIST' | 'DETAIL';
 /**
  * Stores Sandbox taxpayer notice list/detail payloads (cache-first).
  */
-@Schema({ collection: 'gst_notice_data', timestamps: true })
+@Schema({ collection: 'gst_notices_data', timestamps: true })
 export class GstNoticeRecord {
   @Prop({ required: true, enum: ['LIST', 'DETAIL'], index: true })
   recordType: GstNoticeRecordType;

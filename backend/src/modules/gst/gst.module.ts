@@ -28,6 +28,8 @@ import { GstReturnPersistenceService } from './services/gst-return-persistence.s
 import { GstNoticePersistenceService } from './services/gst-notice-persistence.service';
 import { GstReturnAggregationSchedulerService } from './services/gst-return-aggregation-scheduler.service';
 import { GstTaxPaymentChartService } from './services/gst-tax-payment-chart.service';
+import { GstRegistrationStatusChartService } from './services/gst-registration-status-chart.service';
+import { GstLegalRiskChartService } from './services/gst-legal-risk-chart.service';
 import {
   GstComplianceRecord,
   GstComplianceSchema,
@@ -127,6 +129,8 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
     GstTaxpayerReturnsService,
     ApiRequestLogService,
     GstTaxPaymentChartService,
+    GstRegistrationStatusChartService,
+    GstLegalRiskChartService,
   ],
   exports: [GstService],
 })

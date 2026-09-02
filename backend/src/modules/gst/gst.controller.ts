@@ -29,6 +29,8 @@ import {
   type SchedulerReturnType,
 } from './services/gst-return-aggregation-scheduler.service';
 import { GstTaxPaymentChartService } from './services/gst-tax-payment-chart.service';
+import { GstRegistrationStatusChartService } from './services/gst-registration-status-chart.service';
+import { GstLegalRiskChartService } from './services/gst-legal-risk-chart.service';
 import { FileStorageService } from '../shared/services/file-storage.service';
 import type { ApiRequestStatus } from '../../entities/api-request-log.entity';
 import { Public } from '../../auth/public.decorator';
@@ -45,6 +47,8 @@ export class GstController {
     private readonly apiRequestLogService: ApiRequestLogService,
     private readonly returnAggregationScheduler: GstReturnAggregationSchedulerService,
     private readonly taxPaymentChartService: GstTaxPaymentChartService,
+    private readonly registrationStatusChartService: GstRegistrationStatusChartService,
+    private readonly legalRiskChartService: GstLegalRiskChartService,
     @Optional() @Inject('EXCEL_SERVICE') private readonly excelClient?: ClientProxy,
   ) {}
 
@@ -312,6 +316,79 @@ export class GstController {
       username,
     });
     return this.successResponse('charts.tax-payment', data);
+  }
+
+  /**
+   * GET /gst/charts/registration-status
+   * Registration Status Sankey (GSTREG1): Active / Cancelled / Suspended by FY.
+   *
+   * Response data:
+   *   - series: yearly counts + %
+   *   - flows: GSTIN status transitions between consecutive FYs
+   *   - netChange: first vs last FY (hover)
+   *   - incomplete + missing: Fetch Data | Continue Anyway popup
+   *   - drilldown: GSTIN rows when financialYear + status provided
+   *   - fetch: job id when fetchMissing=true (GSTREG1 verify/search refresh)
+   *
+   * Required: entityType=PAN|LOAN, entityId, range=1y|3y|5y
+   * Optional: financialYear, status=ACTIVE|CANCELLED|SUSPENDED, fetchMissing, tableName
+   */
+  @Get('charts/registration-status')
+  async getRegistrationStatusChart(
+    @Query('entityType') entityType?: string,
+    @Query('entityId') entityId?: string,
+    @Query('range') range?: string,
+    @Query('tableName') tableName?: string,
+    @Query('financialYear') financialYear?: string,
+    @Query('status') status?: string,
+    @Query('fetchMissing') fetchMissing?: string,
+  ) {
+    const data = await this.registrationStatusChartService.getChart({
+      entityType: entityType ?? '',
+      entityId: entityId ?? '',
+      range: range ?? '',
+      tableName,
+      financialYear,
+      status,
+      fetchMissing,
+    });
+    return this.successResponse('charts.registration-status', data);
+  }
+
+  /**
+   * GET /gst/charts/legal-risk
+   * Legal Risk donut from gst_notices_data: High / Medium / Low for a financial year.
+   *
+   * Response data:
+   *   - total, high, medium, low, pct*: donut slices (centre = total)
+   *   - interpretation: active / overdue / YoY / repeated notices
+   *   - incomplete + missing: Fetch Data | Continue Anyway
+   *   - drilldown: notice rows when risk=HIGH|MEDIUM|LOW
+   *   - fetch: notice-list refresh when fetchMissing=true (requires username)
+   *
+   * Required: entityType=PAN|LOAN, entityId
+   * Optional: financialYear (default current FY), risk, fetchMissing, username, tableName
+   */
+  @Get('charts/legal-risk')
+  async getLegalRiskChart(
+    @Query('entityType') entityType?: string,
+    @Query('entityId') entityId?: string,
+    @Query('tableName') tableName?: string,
+    @Query('financialYear') financialYear?: string,
+    @Query('risk') risk?: string,
+    @Query('fetchMissing') fetchMissing?: string,
+    @Query('username') username?: string,
+  ) {
+    const data = await this.legalRiskChartService.getChart({
+      entityType: entityType ?? '',
+      entityId: entityId ?? '',
+      tableName,
+      financialYear,
+      risk,
+      fetchMissing,
+      username,
+    });
+    return this.successResponse('charts.legal-risk', data);
   }
 
   /**
