@@ -31,6 +31,7 @@ import {
 import { GstTaxPaymentChartService } from './services/gst-tax-payment-chart.service';
 import { GstRegistrationStatusChartService } from './services/gst-registration-status-chart.service';
 import { GstLegalRiskChartService } from './services/gst-legal-risk-chart.service';
+import { GstSupplierConcentrationChartService } from './services/gst-supplier-concentration-chart.service';
 import { FileStorageService } from '../shared/services/file-storage.service';
 import type { ApiRequestStatus } from '../../entities/api-request-log.entity';
 import { Public } from '../../auth/public.decorator';
@@ -49,6 +50,7 @@ export class GstController {
     private readonly taxPaymentChartService: GstTaxPaymentChartService,
     private readonly registrationStatusChartService: GstRegistrationStatusChartService,
     private readonly legalRiskChartService: GstLegalRiskChartService,
+    private readonly supplierConcentrationChartService: GstSupplierConcentrationChartService,
     @Optional() @Inject('EXCEL_SERVICE') private readonly excelClient?: ClientProxy,
   ) {}
 
@@ -389,6 +391,42 @@ export class GstController {
       username,
     });
     return this.successResponse('charts.legal-risk', data);
+  }
+
+  /**
+   * GET /gst/charts/supplier-concentration
+   * Top 5 supplier dependency from GSTR-2B (two-period comparison).
+   *
+   * Response data:
+   *   - series: Top 5 by current-period share (previous vs current + movement)
+   *   - totals / concentration / churn: company totals, Top 5 %, new + attrition
+   *   - incomplete + missing: Fetch Data | Continue Anyway (GSTIN-months)
+   *   - drilldown: full supplier table when view=table
+   *   - fetch: GSTR-2B jobs when fetchMissing=true
+   *
+   * Required: entityType=PAN|LOAN, entityId, range=1y|3y|5y
+   * Optional: view=table, fetchMissing, username, tableName
+   */
+  @Get('charts/supplier-concentration')
+  async getSupplierConcentrationChart(
+    @Query('entityType') entityType?: string,
+    @Query('entityId') entityId?: string,
+    @Query('range') range?: string,
+    @Query('tableName') tableName?: string,
+    @Query('view') view?: string,
+    @Query('fetchMissing') fetchMissing?: string,
+    @Query('username') username?: string,
+  ) {
+    const data = await this.supplierConcentrationChartService.getChart({
+      entityType: entityType ?? '',
+      entityId: entityId ?? '',
+      range: range ?? '',
+      tableName,
+      view,
+      fetchMissing,
+      username,
+    });
+    return this.successResponse('charts.supplier-concentration', data);
   }
 
   /**

@@ -30,6 +30,7 @@ import { GstReturnAggregationSchedulerService } from './services/gst-return-aggr
 import { GstTaxPaymentChartService } from './services/gst-tax-payment-chart.service';
 import { GstRegistrationStatusChartService } from './services/gst-registration-status-chart.service';
 import { GstLegalRiskChartService } from './services/gst-legal-risk-chart.service';
+import { GstSupplierConcentrationChartService } from './services/gst-supplier-concentration-chart.service';
 import {
   GstComplianceRecord,
   GstComplianceSchema,
@@ -131,6 +132,7 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
     GstTaxPaymentChartService,
     GstRegistrationStatusChartService,
     GstLegalRiskChartService,
+    GstSupplierConcentrationChartService,
   ],
   exports: [GstService],
 })
