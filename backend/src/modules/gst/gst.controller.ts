@@ -32,6 +32,7 @@ import { GstTaxPaymentChartService } from './services/gst-tax-payment-chart.serv
 import { GstRegistrationStatusChartService } from './services/gst-registration-status-chart.service';
 import { GstLegalRiskChartService } from './services/gst-legal-risk-chart.service';
 import { GstSupplierConcentrationChartService } from './services/gst-supplier-concentration-chart.service';
+import { GstGeographicConcentrationChartService } from './services/gst-geographic-concentration-chart.service';
 import { FileStorageService } from '../shared/services/file-storage.service';
 import type { ApiRequestStatus } from '../../entities/api-request-log.entity';
 import { Public } from '../../auth/public.decorator';
@@ -51,6 +52,7 @@ export class GstController {
     private readonly registrationStatusChartService: GstRegistrationStatusChartService,
     private readonly legalRiskChartService: GstLegalRiskChartService,
     private readonly supplierConcentrationChartService: GstSupplierConcentrationChartService,
+    private readonly geographicConcentrationChartService: GstGeographicConcentrationChartService,
     @Optional() @Inject('EXCEL_SERVICE') private readonly excelClient?: ClientProxy,
   ) {}
 
@@ -427,6 +429,41 @@ export class GstController {
       username,
     });
     return this.successResponse('charts.supplier-concentration', data);
+  }
+
+  /**
+   * GET /gst/charts/geographic-concentration
+   * India map: composite geographic risk by state (yearly).
+   *
+   * Response data:
+   *   - series: stateCode, compositeScore, riskLevel, factor cells
+   *   - incomplete + missing: Fetch Data | Continue Anyway (by source)
+   *   - drilldown: factor table + GSTIN rows when state= is sent
+   *   - fetch: 2B/3B/GSTR-1/REG1/notice jobs when fetchMissing=true
+   *
+   * Required: entityType=PAN|LOAN, entityId, range=1y|3y|5y
+   * Optional: state (code or name), fetchMissing, username, tableName
+   */
+  @Get('charts/geographic-concentration')
+  async getGeographicConcentrationChart(
+    @Query('entityType') entityType?: string,
+    @Query('entityId') entityId?: string,
+    @Query('range') range?: string,
+    @Query('tableName') tableName?: string,
+    @Query('state') state?: string,
+    @Query('fetchMissing') fetchMissing?: string,
+    @Query('username') username?: string,
+  ) {
+    const data = await this.geographicConcentrationChartService.getChart({
+      entityType: entityType ?? '',
+      entityId: entityId ?? '',
+      range: range ?? '',
+      tableName,
+      state,
+      fetchMissing,
+      username,
+    });
+    return this.successResponse('charts.geographic-concentration', data);
   }
 
   /**

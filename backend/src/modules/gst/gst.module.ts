@@ -31,6 +31,7 @@ import { GstTaxPaymentChartService } from './services/gst-tax-payment-chart.serv
 import { GstRegistrationStatusChartService } from './services/gst-registration-status-chart.service';
 import { GstLegalRiskChartService } from './services/gst-legal-risk-chart.service';
 import { GstSupplierConcentrationChartService } from './services/gst-supplier-concentration-chart.service';
+import { GstGeographicConcentrationChartService } from './services/gst-geographic-concentration-chart.service';
 import {
   GstComplianceRecord,
   GstComplianceSchema,
@@ -133,6 +134,7 @@ const enableMongo = process.env.ENABLE_MONGO === 'true';
     GstRegistrationStatusChartService,
     GstLegalRiskChartService,
     GstSupplierConcentrationChartService,
+    GstGeographicConcentrationChartService,
   ],
   exports: [GstService],
 })
